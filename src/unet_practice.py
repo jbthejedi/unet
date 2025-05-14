@@ -21,7 +21,8 @@ class Config:
     run : str = "unet-run"
     lr : float = 1e-3
     image_size : int = 128
-    batch_size : int = 8
+    batch_size : int = 4
+    n_epochs : int = 2
 
 
 class DoubleConv(nn.Module):
@@ -71,15 +72,11 @@ class UNet(nn.Module):
     
     def forward(self, x):
         d1 = self.down1(x)
-        x = self.conv1(d1)
-        d2 = self.down2(x)
-        x = self.conv2(d2)
-        d3 = self.down3(x)
-        x = self.conv3(d3)
-        d4 = self.down4(x)
-        x = self.conv4(d4)
+        d2 = self.down2(self.pool1(d1))
+        d3 = self.down3(self.pool2(d2))
+        d4 = self.down4(self.pool3(d3))
 
-        m = self.middle(x)
+        m = self.middle(self.pool4(d4))
 
         u4 = self.conv4(torch.cat([self.up4(m), d4], dim=1))
         u3 = self.conv3(torch.cat([self.up3(u4), d3], dim=1))
@@ -123,18 +120,46 @@ def train_and_validate_model(config : Config):
         shuffle=False,
     )
 
-    model = UNet().to(device)
-    criterion = F.CrossEntropyLoss()
+    model = UNet(in_channels=3, out_channels=3).to(device)
+    criterion = nn.CrossEntropyLoss()
+    optimizer = torch.optim.Adam(model.parameters(), lr=config.lr)
 
 
     for epoch in range(1, config.n_epochs+1):
         tqdm.write(f"Epoch {epoch}/{config.n_epochs+1}")
+        model.train()
         with tqdm(train_dl, desc="Training") as pbar:
             train_loss = 0
             train_correct = 0.0
             train_total = 0
             for xb, yb in pbar:
-        
+                xb = xb.to(device)
+                yb = yb.squeeze(1).long().to(device)
+                logits = model(xb)
+                loss = criterion(logits, yb)
+                optimizer.zero_grad()
+                loss.backward()
+                optimizer.step()
+
+                train_loss = loss.item() * xb.size(0)
+                _, preds = torch.max(logits, 1)
+                train_correct += (preds == yb).sum().item()
+                train_total += xb.size(0)
+            train_epoch_loss += train_loss / train_total
+            train_epoch_acc += train_correct / train_total
+            pbar.set_postfix(f"Train Loss {train_epoch_loss} Train Acc {train_epoch_acc}")
+
+        model.eval()
+        with tqdm(val_dl, desc="Validation") as pbar:
+            with torch.no_grad():
+                for xb, yb in pbar:
+                    xb = xb.to(device)
+                    yb = yb.squeeze(1).long().to(device)
+                    logits = model(xb)
+                    total_loss += criterion(preds, yb).item()
+            pbar.set_postfix(f"Val Loss {total_loss}")
+
+
 
 def main():
     config = Config()
