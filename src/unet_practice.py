@@ -342,8 +342,9 @@ def train_and_validate_model(train_dl, val_dl, config):
 @hydra.main(version_base="1.1", config_path="../configs", config_name="default")
 def main(config: DictConfig):
     # config = Config()
-    print("Running on", config.device)
+    print("Config device", config.device)
     device = torch.device(config.device if torch.cuda.is_available() else "cpu")
+    print(f"Running on {device}")
 
     dataset = configure_dataset(config)
     # visualize_dataset_grid(dataset, num_samples=8)

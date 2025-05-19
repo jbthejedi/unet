@@ -1,8 +1,11 @@
+defaults:
+    - env: local
+
 project: unet-oxford-pet
-name: unet
+name: unet-local
 lr: 1e-4
-image_size: 128
 batch_size: 4
+image_size: 128
 n_epochs: 7
 
 device: cpu
