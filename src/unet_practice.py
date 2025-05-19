@@ -1,4 +1,5 @@
 import wandb
+from pprint import pprint
 import os
 import yaml
 # import hydra
@@ -12,7 +13,7 @@ import matplotlib.pyplot as plt
 import torchvision.transforms.functional as TF
 
 from tqdm import tqdm
-# from omegaconf import OmegaConf
+from omegaconf import OmegaConf
 from dataclasses import dataclass
 from torchvision.datasets import OxfordIIITPet
 from torch.utils.data import DataLoader, Subset, random_split
@@ -341,11 +342,7 @@ def train_and_validate_model(train_dl, val_dl, config):
         visualize_predictions(model, val_dl, config.device, num_batches=1)
 
 
-#@hydra.main(version_base="1.1", config_path="../configs", config_name="default")
-def main(config: DictConfig):
-    # config = Config()
-    config_dict = OmegaConf.to_container(config, resolve=True)
-    print(config_dict)
+def main(config):
     print("Config device", config.device)
     device = torch.device(config.device if torch.cuda.is_available() else "cpu")
     print(f"Running on {device}")
@@ -356,25 +353,29 @@ def main(config: DictConfig):
     train_and_validate_model(train_dl, val_dl, config)
 
 
+
 def load_config(env="local"):
-    with open("config/base.yaml", "r") as f:
-        base_config = yaml.safe_load(f)
+    base_config = OmegaConf.load("config/base.yaml")
 
     env_path = f"config/{env}.yaml"
     if os.path.exists(env_path):
-        with open(env_path, "r") as f:
-            env_config = yaml.safe_load(f)
-        base_config.update(env_config)
+        env_config = OmegaConf.load(env_path)
+        # Merges env_config into base_config (env overrides base)
+        config = OmegaConf.merge(base_config, env_config)
+    else:
+        config = base_config
 
-    return base_config
+    return config
 
 if __name__ == "__main__":
     env = os.environ.get("ENV", "local")  # default to 'local'
     cfg = load_config(env)
 
     print(f"Running in {env} environment")
-    print(cfg)
-    # main()
+    pprint(cfg)
+    print(type(cfg))
+
+    main(cfg)
 
 
 
