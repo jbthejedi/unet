@@ -1,0 +1,7 @@
+# merge with default, only change small bits:
+batch_size: 4
+sample_size: 100
+device: cpu
+
+data_root : 
+wandb_active: disabled

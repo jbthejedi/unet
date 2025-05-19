@@ -1,4 +1,5 @@
 import wandb
+import hydra
 import random
 import torch
 import numpy as np
@@ -9,31 +10,33 @@ import matplotlib.pyplot as plt
 import torchvision.transforms.functional as TF
 
 from tqdm import tqdm
+from omegaconf import OmegaConf
 from dataclasses import dataclass
 from torchvision.datasets import OxfordIIITPet
 from torch.utils.data import DataLoader, Subset, random_split
+from omegaconf import DictConfig
 
 
 seed = 1337
 torch.manual_seed(seed)
-device = "cuda" if torch.cuda.is_available() else "cpu"
+# device = "cuda" if torch.cuda.is_available() else "cpu"
 
 
-@dataclass
-class Config:
-    project : str = "unet-oxford-pet"
-    name : str = "unet-run"
-    lr : float = 1e-4
-    image_size : int = 128
-    batch_size : int = 16
-    n_epochs : int = 12
-
-    sample_size : int = 400
-    test_run : bool = True
-    # test_run : bool = False
-
-    # wandb_active : str = 'online'
-    wandb_active : str = 'disabled'
+# @dataclass
+# class Config:
+#     project : str = "unet-oxford-pet"
+#     name : str = "unet-run"
+#     lr : float = 1e-4
+#     image_size : int = 128
+#     batch_size : int = 16
+#     n_epochs : int = 12
+# 
+#     sample_size : int = 400
+#     test_run : bool = True
+#     # test_run : bool = False
+# 
+#     # wandb_active : str = 'online'
+#     wandb_active : str = 'disabled'
 
 
 class DoubleConv(nn.Module):
@@ -199,7 +202,7 @@ def visualize_predictions(model, dataloader, device, num_batches=1):
                 break
 
 
-def configure_dataset(config : Config):
+def configure_dataset(config):
     transform = T.Compose([
         T.Resize((config.image_size, config.image_size)),
         # T.RandomHorizontalFlip(),
@@ -214,8 +217,8 @@ def configure_dataset(config : Config):
     ])
 
     dataset = OxfordIIITPet(
-        root='/Users/justinbarry/projects/unet.bk/src/data/',
-        download=False,
+        root=config.data_root,
+        download=True,
         target_types='segmentation',
         transform=transform,
         target_transform=target_transform
@@ -242,14 +245,15 @@ def get_train_val_dl(dataset, config):
     return train_dl, val_dl
     
 def train_and_validate_model(train_dl, val_dl, config):
+    config_dict = OmegaConf.to_container(config, resolve=True)
     wandb.init(
         project=config.project,
         name=config.name,
-        config=vars(config),
+        config=config_dict,
         mode=config.wandb_active
     )
 
-    model = UNet(in_channels=3, out_channels=3).to(device)
+    model = UNet(in_channels=3, out_channels=3).to(config.device)
     # label indexes (pets, background, boundary)
     weights = torch.tensor([1.3, 1.0, 0.0])
     criterion = nn.CrossEntropyLoss(weight=weights, ignore_index=2)
@@ -266,8 +270,8 @@ def train_and_validate_model(train_dl, val_dl, config):
             train_total_pixels = 0
             total_samples = 0
             for xb, yb in pbar:
-                xb = xb.to(device)
-                yb = yb.squeeze(1).long().to(device)
+                xb = xb.to(config.device)
+                yb = yb.squeeze(1).long().to(config.device)
                 logits = model(xb)
                 loss = criterion(logits, yb)
                 optimizer.zero_grad()
@@ -299,8 +303,8 @@ def train_and_validate_model(train_dl, val_dl, config):
                 total_dice = 0.0
                 total_samples = 0
                 for xb, yb in pbar:
-                    xb = xb.to(device)
-                    yb = yb.squeeze(1).long().to(device)
+                    xb = xb.to(config.device)
+                    yb = yb.squeeze(1).long().to(config.device)
                     logits = model(xb)
                     loss = criterion(logits, yb)
 
@@ -331,11 +335,16 @@ def train_and_validate_model(train_dl, val_dl, config):
             "lr": optimizer.param_groups[0]['lr']
         })
     wandb.finish()
-    visualize_predictions(model, val_dl, device, num_batches=1)
+    if cfg.get("visualize_predictions"):
+        visualize_predictions(model, val_dl, config.device, num_batches=1)
 
 
-def main():
-    config = Config()
+@hydra.main(version_base="1.1", config_path="../configs", config_name="default")
+def main(config: DictConfig):
+    # config = Config()
+    print("Running on", config.device)
+    device = torch.device(config.device if torch.cuda.is_available() else "cpu")
+
     dataset = configure_dataset(config)
     # visualize_dataset_grid(dataset, num_samples=8)
     train_dl, val_dl = get_train_val_dl(dataset, config)

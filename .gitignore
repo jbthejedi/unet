@@ -1,4 +1,5 @@
 *.swp
+outputs/
 src/wandb/
 wandb/
 
