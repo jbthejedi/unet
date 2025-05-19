@@ -210,13 +210,19 @@ def adjust_target_mask(x):
 
 
 def configure_dataset(config):
-    transform = T.Compose([
-        T.Resize((config.image_size, config.image_size)),
-        # T.RandomHorizontalFlip(),
-        # T.ColorJitter(),
-        # T.RandomResizedCrop(config.image_size, scale=(0.8, 1.0)),
-        T.ToTensor(),
-    ])
+    if config.device == 'cuda':
+        transform = T.Compose([
+            T.Resize((config.image_size, config.image_size)),
+            T.RandomHorizontalFlip(),
+            T.ColorJitter(),
+            T.RandomResizedCrop(config.image_size, scale=(0.8, 1.0)),
+            T.ToTensor(),
+        ])
+    else:
+        transform = T.Compose([
+            T.Resize((config.image_size, config.image_size)),
+            T.ToTensor(),
+        ])
     target_transform = T.Compose([
         T.Resize((config.image_size, config.image_size)),
         T.PILToTensor(),
