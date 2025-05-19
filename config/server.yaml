@@ -8,4 +8,6 @@ data_root: /workspace/unet/data
 
 test_run: False
 wandb_active: online
+
 visualize_predictions: False
+num_workers: 8

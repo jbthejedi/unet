@@ -11,3 +11,4 @@ sample_size: 400
 wandb_active: disabled
 
 visualize_predictions: True
+num_workers: 4

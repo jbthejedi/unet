@@ -205,6 +205,10 @@ def visualize_predictions(model, dataloader, device, num_batches=1):
                 break
 
 
+def adjust_target_mask(x):
+    return x.long().squeeze(0) - 1
+
+
 def configure_dataset(config):
     transform = T.Compose([
         T.Resize((config.image_size, config.image_size)),
@@ -216,7 +220,7 @@ def configure_dataset(config):
     target_transform = T.Compose([
         T.Resize((config.image_size, config.image_size)),
         T.PILToTensor(),
-        T.Lambda(lambda x: x.long().squeeze(0) - 1)
+        T.Lambda(adjust_target_mask)
     ])
 
     dataset = OxfordIIITPet(
@@ -239,11 +243,15 @@ def get_train_val_dl(dataset, config):
         train_ds,
         batch_size=config.batch_size,
         shuffle=True,
+        num_workers=config.num_workers,
+        pin_memory=True,
     )
     val_dl = DataLoader(
         val_ds,
         batch_size=config.batch_size,
         shuffle=False,
+        num_workers=config.num_workers,
+        pin_memory=True,
     )
     return train_dl, val_dl
     
