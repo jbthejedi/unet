@@ -1,14 +1,11 @@
-# configs/server.yaml
-defaults:
-  - _self_
-  - common  # ← same base
-
 name: unet-server
+
 batch_size: 32
 image_size: 224
 n_epochs: 20
 device: cuda
+data_root: /workspace/unet/data
+
+test_run: False
 wandb_active: online
 visualize_predictions: False
-data_root: /workspace/unet/data
-test_run: False

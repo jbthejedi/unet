@@ -1,5 +1,7 @@
 import wandb
-import hydra
+import os
+import yaml
+# import hydra
 import random
 import torch
 import numpy as np
@@ -10,7 +12,7 @@ import matplotlib.pyplot as plt
 import torchvision.transforms.functional as TF
 
 from tqdm import tqdm
-from omegaconf import OmegaConf
+# from omegaconf import OmegaConf
 from dataclasses import dataclass
 from torchvision.datasets import OxfordIIITPet
 from torch.utils.data import DataLoader, Subset, random_split
@@ -339,7 +341,7 @@ def train_and_validate_model(train_dl, val_dl, config):
         visualize_predictions(model, val_dl, config.device, num_batches=1)
 
 
-@hydra.main(version_base="1.1", config_path="../configs", config_name="default")
+#@hydra.main(version_base="1.1", config_path="../configs", config_name="default")
 def main(config: DictConfig):
     # config = Config()
     config_dict = OmegaConf.to_container(config, resolve=True)
@@ -352,10 +354,27 @@ def main(config: DictConfig):
     # visualize_dataset_grid(dataset, num_samples=8)
     train_dl, val_dl = get_train_val_dl(dataset, config)
     train_and_validate_model(train_dl, val_dl, config)
-    
-if __name__ == "__main__":
-    main()
 
+
+def load_config(env="local"):
+    with open("config/base.yaml", "r") as f:
+        base_config = yaml.safe_load(f)
+
+    env_path = f"config/{env}.yaml"
+    if os.path.exists(env_path):
+        with open(env_path, "r") as f:
+            env_config = yaml.safe_load(f)
+        base_config.update(env_config)
+
+    return base_config
+
+if __name__ == "__main__":
+    env = os.environ.get("ENV", "local")  # default to 'local'
+    cfg = load_config(env)
+
+    print(f"Running in {env} environment")
+    print(cfg)
+    # main()
 
 
 
