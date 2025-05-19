@@ -264,7 +264,25 @@ def train_and_validate_model(train_dl, val_dl, config):
         mode=config.wandb_active
     )
 
-    model = UNet(in_channels=3, out_channels=3).to(config.device)
+    # Setup W&B API
+    # Replace with your actual project, run, and artifact names
+    api = wandb.Api()
+    artifact_name = 'jbarry-team/unet-oxford-pet/unet-server_model:latest'
+    try:
+        artifact = api.artifact(artifact_name, type='model')
+        artifact_dir = artifact.download()
+
+        # Load model
+        model = UNet(in_channels=3, out_channels=3)
+        model.load_state_dict(torch.load(f"{artifact_dir}/unet-server_final.pth", map_location="cpu"))
+        model.eval()
+        print("Model loaded successfully.")
+    except wandb.CommError as e:
+        model = UNet(in_channels=3, out_channels=3).to(config.device)
+        print(f"Artifact not found: {artifact_name}")
+        print(f"Error: {e}")
+
+
     # label indexes (pets, background, boundary)
     weights = torch.tensor([1.3, 1.0, 0.0], device=config.device)
     criterion = nn.CrossEntropyLoss(weight=weights, ignore_index=2)
@@ -274,6 +292,7 @@ def train_and_validate_model(train_dl, val_dl, config):
     for epoch in range(1, config.n_epochs+1):
         tqdm.write(f"Epoch {epoch}/{config.n_epochs+1}")
         model.train()
+        best_val_dice = 0.0
         with tqdm(train_dl, desc="Training") as pbar:
             train_loss = 0.0
             train_correct = 0.0
@@ -303,7 +322,9 @@ def train_and_validate_model(train_dl, val_dl, config):
             train_epoch_loss = train_loss / train_total_pixels
             train_epoch_acc = train_correct / train_total_pixels
             train_epoch_dice = total_dice / total_samples
-            tqdm.write(f"Train Loss {train_epoch_loss:.4f} Train Acc {train_epoch_acc:.2f} Train Dice {train_epoch_dice:.4f}")
+            tqdm.write(f"""
+            Train Loss {train_epoch_loss:.4f} Train Acc {train_epoch_acc:.2f} 
+            Train Dice {train_epoch_dice:.4f}""")
 
         model.eval()
         with tqdm(val_dl, desc="Validation") as pbar:
@@ -332,8 +353,19 @@ def train_and_validate_model(train_dl, val_dl, config):
                 val_epoch_loss = val_loss / val_total
                 val_epoch_acc = val_correct / val_total
                 val_epoch_dice = total_dice / total_samples
-                tqdm.write(f"Val Loss {val_epoch_loss:.4f} Val Acc {val_epoch_acc:.2f} Val Dice {val_epoch_dice:.4f}")
+                tqdm.write(f"""
+                    Val Loss {val_epoch_loss:.4f} Val Acc {val_epoch_acc:.2f} 
+                    Val Dice {val_epoch_dice:.4f}""")
                 pbar.set_postfix(loss=loss.item())
+
+                if config.device == 'cuda' and val_epoch_dice > best_val_dice:
+                    tqdm.write("Writing best model...")
+                    best_val_dice = val_epoch_dice
+                    torch.save(model.state_dict(), "best_model.pth")
+                    artifact = wandb.Artifact(name=f"{config.name}_best_model", type="model")
+                    artifact.add_file("best_model.pth")
+                    wandb.log_artifact(artifact)
+                    tqdm.write("Model written.")
 
         wandb.log({
             "epoch": epoch,
@@ -380,7 +412,8 @@ if __name__ == "__main__":
     cfg = load_config(env)
 
     print(f"Running in {env} environment")
-    pprint(cfg)
+    cfg_dict = OmegaConf.to_container(cfg, resolve=True)
+    pprint(cfg_dict)
     print(type(cfg))
 
     main(cfg)
