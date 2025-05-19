@@ -11,3 +11,6 @@ wandb_active: online
 
 visualize_predictions: False
 num_workers: 15
+
+test_model: False
+train_model: True

@@ -210,6 +210,10 @@ def adjust_target_mask(x):
 
 
 def configure_dataset(config):
+    """
+    Geometric (flip/rotate/scale/shear) → helps the network generalize to different poses & framing.
+    Photometric (brightness/contrast/hue/blur) → helps the network be robust to lighting & camera variation.
+    """
     if config.device == 'cuda':
         transform = T.Compose([
             T.Resize((config.image_size, config.image_size)),
@@ -270,25 +274,8 @@ def train_and_validate_model(train_dl, val_dl, config):
         mode=config.wandb_active
     )
 
-    # Setup W&B API
-    # Replace with your actual project, run, and artifact names
-    api = wandb.Api()
-    artifact_name = 'jbarry-team/unet-oxford-pet/unet-server_model:latest'
-    try:
-        artifact = api.artifact(artifact_name, type='model')
-        artifact_dir = artifact.download()
 
-        # Load model
-        model = UNet(in_channels=3, out_channels=3)
-        model.load_state_dict(torch.load(f"{artifact_dir}/unet-server_final.pth", map_location="cpu"))
-        model.eval()
-        print("Model loaded successfully.")
-    except wandb.CommError as e:
-        model = UNet(in_channels=3, out_channels=3).to(config.device)
-        print(f"Artifact not found: {artifact_name}")
-        print(f"Error: {e}")
-
-
+    model = UNet(in_channels=3, out_channels=3).to(config.device)
     # label indexes (pets, background, boundary)
     weights = torch.tensor([1.3, 1.0, 0.0], device=config.device)
     criterion = nn.CrossEntropyLoss(weight=weights, ignore_index=2)
@@ -388,6 +375,27 @@ def train_and_validate_model(train_dl, val_dl, config):
         visualize_predictions(model, val_dl, config.device, num_batches=1)
 
 
+def load_and_test_model(config, val_dl):
+    # Setup W&B API
+    # Replace with your actual project, run, and artifact names
+    api = wandb.Api()
+    artifact_name = 'jbarry-team/unet-oxford-pet/unet-server_best_model:latest'
+    try:
+        artifact = api.artifact(artifact_name, type='model')
+        artifact_dir = artifact.download()
+
+        # Load model
+        model = UNet(in_channels=3, out_channels=3)
+        model.load_state_dict(torch.load(f"{artifact_dir}/best_model.pth", map_location="cpu"))
+        model.eval()
+        print("Model loaded successfully.")
+    except wandb.CommError as e:
+        model = UNet(in_channels=3, out_channels=3).to(config.device)
+        print(f"Artifact not found: {artifact_name}")
+        print(f"Error: {e}")
+    visualize_predictions(model, val_dl, config.device, num_batches=1)
+
+
 def main(config):
     print("Config device", config.device)
     device = torch.device(config.device if torch.cuda.is_available() else "cpu")
@@ -396,8 +404,11 @@ def main(config):
     dataset = configure_dataset(config)
     # visualize_dataset_grid(dataset, num_samples=8)
     train_dl, val_dl = get_train_val_dl(dataset, config)
-    train_and_validate_model(train_dl, val_dl, config)
 
+    if config.test_model:
+        load_and_test_model(config, val_dl)
+    elif config.train_model:
+        train_and_validate_model(train_dl, val_dl, config)
 
 
 def load_config(env="local"):
