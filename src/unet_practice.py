@@ -258,7 +258,7 @@ def train_and_validate_model(train_dl, val_dl, config):
 
     model = UNet(in_channels=3, out_channels=3).to(config.device)
     # label indexes (pets, background, boundary)
-    weights = torch.tensor([1.3, 1.0, 0.0])
+    weights = torch.tensor([1.3, 1.0, 0.0], device=config.device)
     criterion = nn.CrossEntropyLoss(weight=weights, ignore_index=2)
     optimizer = torch.optim.Adam(model.parameters(), lr=config.lr)
 
