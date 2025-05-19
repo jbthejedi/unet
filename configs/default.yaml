@@ -1,28 +1,3 @@
 defaults:
     - _self_
-    - env: local
-
-project: unet-oxford-pet
-name: unet-local
-lr: 1e-4
-batch_size: 4
-image_size: 128
-n_epochs: 7
-
-device: cpu
-data_root: /Users/justinbarry/projects/unet/data/
-
-test_run: True
-sample_size: 400
-wandb_active: disabled
-
-# model and loss
-in_channels: 3
-out_channels: 3
-weights: [1.3, 1.0, 0.0]
-ignore_index: 2
-
-# logging
-log_dir: runs/${project}/${name}
-
-visualize_predictions: True
+    - common

@@ -1,3 +1,8 @@
+# configs/server.yaml
+defaults:
+  - _self_
+  - common  # ← same base
+
 name: unet-server
 batch_size: 32
 image_size: 224
