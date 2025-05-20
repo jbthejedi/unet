@@ -1,4 +1,5 @@
 project: unet-oxford-pet
+p_train_len: 0.9
 
 # model and loss
 in_channels: 3

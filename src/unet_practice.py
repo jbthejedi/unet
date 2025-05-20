@@ -290,13 +290,11 @@ def train_and_validate_model(train_dl, val_dl, config):
         mode=config.wandb_active
     )
 
-
     model = UNet(in_channels=3, out_channels=3).to(config.device)
     # label indexes (pets, background, boundary)
     weights = torch.tensor([1.3, 1.0, 0.0], device=config.device)
     criterion = nn.CrossEntropyLoss(weight=weights, ignore_index=2)
     optimizer = torch.optim.Adam(model.parameters(), lr=config.lr)
-
 
     for epoch in range(1, config.n_epochs+1):
         tqdm.write(f"Epoch {epoch}/{config.n_epochs+1}")
@@ -310,7 +308,8 @@ def train_and_validate_model(train_dl, val_dl, config):
             total_samples = 0
             for xb, yb in pbar:
                 xb = xb.to(config.device)
-                yb = yb.squeeze(1).long().to(config.device)
+                # yb = yb.squeeze(1).long().to(config.device)
+                yb = yb.to(config.device)
                 logits = model(xb)
                 loss = criterion(logits, yb)
                 optimizer.zero_grad()
@@ -345,7 +344,8 @@ def train_and_validate_model(train_dl, val_dl, config):
                 total_samples = 0
                 for xb, yb in pbar:
                     xb = xb.to(config.device)
-                    yb = yb.squeeze(1).long().to(config.device)
+                    # yb = yb.squeeze(1).long().to(config.device)
+                    yb = yb.to(config.device)
                     logits = model(xb)
                     loss = criterion(logits, yb)
 
