@@ -12,6 +12,9 @@ import torch.nn as nn
 import matplotlib.pyplot as plt
 import torchvision.transforms.functional as TF
 
+# import albumentations as A
+# from albumentations.pytorch import ToTensorV2
+
 from tqdm import tqdm
 from omegaconf import OmegaConf
 from dataclasses import dataclass
@@ -215,18 +218,29 @@ def configure_dataset(config):
     Photometric (brightness/contrast/hue/blur) → helps the network be robust to lighting & camera variation.
     """
     if config.device == 'cuda':
-        transform = T.Compose([
+        train_transform = A.Compose([
             T.Resize((config.image_size, config.image_size)),
             T.RandomHorizontalFlip(),
-            T.ColorJitter(),
-            T.RandomResizedCrop(config.image_size, scale=(0.8, 1.0)),
+            T.RandomRotation(degrees=15),
+            T.ColorJitter(brightness=0.3, contrast=0.3, saturation=0.3, hue=0.1),
+            T.RandomGrayscale(p=0.1),
+            T.GaussianBlur(kernel_size=3),
             T.ToTensor(),
         ])
+        # transform = T.Compose([
+        #     T.Resize((config.image_size, config.image_size)),
+        #     T.RandomHorizontalFlip(),
+        #     T.ColorJitter(),
+        #     T.RandomResizedCrop(config.image_size, scale=(0.8, 1.0)),
+        #     T.ToTensor(),
+        #     ToTensorV2(),
+        # ])
     else:
         transform = T.Compose([
             T.Resize((config.image_size, config.image_size)),
             T.ToTensor(),
         ])
+
     target_transform = T.Compose([
         T.Resize((config.image_size, config.image_size)),
         T.PILToTensor(),

@@ -2,7 +2,7 @@ name: unet-server
 
 batch_size: 32
 image_size: 224
-n_epochs: 20
+n_epochs: 100
 device: cuda
 data_root: /workspace/unet/data
 
