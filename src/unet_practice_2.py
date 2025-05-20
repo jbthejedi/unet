@@ -30,8 +30,6 @@ def main():
     cfg_dict = OmegaConf.to_container(cfg, resolve=True)
     pprint(cfg_dict)
 
-    main(cfg)
-
  
 if __name__ == '__main__':
     main()
