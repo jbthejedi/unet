@@ -218,7 +218,7 @@ def configure_dataset(config):
     Photometric (brightness/contrast/hue/blur) → helps the network be robust to lighting & camera variation.
     """
     if config.device == 'cuda':
-        train_transform = A.Compose([
+        train_transform = T.Compose([
             T.Resize((config.image_size, config.image_size)),
             T.RandomHorizontalFlip(),
             T.RandomRotation(degrees=15),
