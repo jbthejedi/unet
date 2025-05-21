@@ -25,24 +25,6 @@ from omegaconf import DictConfig
 
 seed = 1337
 torch.manual_seed(seed)
-# device = "cuda" if torch.cuda.is_available() else "cpu"
-
-
-# @dataclass
-# class Config:
-#     project : str = "unet-oxford-pet"
-#     name : str = "unet-run"
-#     lr : float = 1e-4
-#     image_size : int = 128
-#     batch_size : int = 16
-#     n_epochs : int = 12
-# 
-#     sample_size : int = 400
-#     test_run : bool = True
-#     # test_run : bool = False
-# 
-#     # wandb_active : str = 'online'
-#     wandb_active : str = 'disabled'
 
 
 class DoubleConv(nn.Module):
