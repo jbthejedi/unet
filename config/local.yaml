@@ -13,5 +13,5 @@ wandb_mode: disabled
 visualize_predictions: True
 num_workers: 4
 
-test_model: False
-train_model: True
+test_model: True
+train_model: False
