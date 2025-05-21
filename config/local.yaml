@@ -7,8 +7,8 @@ device: cpu
 data_root: /Users/justinbarry/projects/unet/data/
 
 test_run: True
-sample_size: 100
-wandb_active: disabled
+sample_size: 20
+wandb_mode: disabled
 
 visualize_predictions: True
 num_workers: 4
