@@ -185,6 +185,81 @@ def get_train_val_dl(dataset, config):
     return train_dl, val_dl
             
 
+def dice_score(logits, labels, fg_classes=[1], eps=1e-6):
+    preds = torch.argmax(logits, dim=1) # (B, H, W)
+    dice = 0.0
+    for c in fg_classes:
+        pred_c = (preds == c).float()
+        label_c = (labels == c).float()
+        intersection = (pred_c * label_c).sum()
+        union = pred_c.sum() + label_c.sum()
+        dice += (2. * intersection + eps) / (union + eps)
+    return dice / len(fg_classes)
+
+
+class DoubleConv(nn.Module):
+    def __init__(self, in_channels, out_channels):
+        super().__init__()
+        self.net = nn.Sequential(
+            nn.Conv2d(in_channels, out_channels, 3, padding=1),
+            nn.BatchNorm2d(out_channels),
+            nn.ReLU(inplace=True),
+            nn.Conv2d(out_channels, out_channels, 3, padding=1),
+            nn.BatchNorm2d(out_channels),
+            nn.ReLU(inplace=True),
+        )
+
+    def forward(self, x):
+        return self.net(x)
+
+
+class UNet(nn.Module):
+    def __init__(
+        self, in_channels, out_channels
+    ):
+        super().__init__()
+        self.down1 = DoubleConv(in_channels, 64) # -> (64, 128, 128)
+        self.pool1 = nn.MaxPool2d(2) # -> (64, 64, 64)
+        self.down2 = DoubleConv(64, 128) # -> (128, 64, 64)
+        self.pool2 = nn.MaxPool2d(2) # -> (128, 32, 32)
+        self.down3 = DoubleConv(128, 256) # -> (256, 32, 32)
+        self.pool3 = nn.MaxPool2d(2) # -> (256, 16, 16)
+        self.down4 = DoubleConv(256, 512) # -> (512, 16, 16)
+        self.pool4 = nn.MaxPool2d(2) # -> (512, 8, 8)
+
+        self.middle = DoubleConv(512, 1024) # -> (1024, 8, 8)
+
+        self.up4 = nn.ConvTranspose2d(1024, 512, 2, stride=2) # -> (512, 16, 16)
+        self.conv4 = DoubleConv(1024, 512) # -> (512, 16, 16)
+        self.up3 = nn.ConvTranspose2d(512, 256, 2, stride=2) # -> (256, 32, 32)
+        self.conv3 = DoubleConv(512, 256) # (256, 32, 32)
+        self.up2 = nn.ConvTranspose2d(256, 128, 2, stride=2) # -> (128, 64, 64)
+        self.conv2 = DoubleConv(256, 128) # -> (128, 64, 64)
+        self.up1 = nn.ConvTranspose2d(128, 64, 2, stride=2) # -> (64, 128, 128)
+        self.conv1 = DoubleConv(128, 64) # -> (64, 128, 128)
+
+        self.out = nn.Conv2d(64, out_channels, kernel_size=1) # (out_channels, H, W)
+
+    def forward(self, x):
+        d1 = self.down1(x)
+        x = self.pool1(d1)
+        d2 = self.down2(x)
+        x = self.pool2(d2)
+        d3 = self.down3(x)
+        x = self.pool3(d3)
+        d4 = self.down4(x)
+        x = self.pool4(d4)
+
+        m = self.middle(x)
+
+        u4 = self.conv4(torch.cat([self.up4(m), d4], dim=1))
+        u3 = self.conv3(torch.cat([self.up3(u4), d3], dim=1))
+        u2 = self.conv2(torch.cat([self.up2(u3), d2], dim=1))
+        u1 = self.conv1(torch.cat([self.up1(u2), d1], dim=1))
+
+        return self.out(u1)
+
+
 def train_and_validate_model(train_dl, val_dl, config):
     config_dict = OmegaConf.to_container(config, resolve=True)
     wandb.init(
@@ -194,10 +269,10 @@ def train_and_validate_model(train_dl, val_dl, config):
         mode=config.wandb_active,
     )
 
-    # model = UNet(in_channe
+    model = UNet(config.in_channels, config.out_channels)
     weights = torch.tensor([1.3, 1.0, 0.0], device=config.device)
     criterion = nn.CrossEntropyLoss(weight=weights, ignore_index=2)
-    # optimizer = torch.optim.Adam(model.parameters(), lr=config.lr)
+    optimizer = torch.optim.Adam(model.parameters(), lr=config.lr)
 
     for epoch in range(1, config.n_epochs + 1):
         tqdm.write(f"Epoch {epoch}/{config.n_epochs+1}")
@@ -209,14 +284,24 @@ def train_and_validate_model(train_dl, val_dl, config):
             total_dice = 0.0
             train_total_pixels = 0
             total_samples = 0
-            # print('before squeeze')
             for xb, yb in pbar: # yb.shape (4, 128, 128)
-                xb = xb.to(config.device)
-                print(f"bs yb.shape {yb.shape}")
-                # yb = yb.squeeze(1).long().to(config.device)
-                yb = yb.to(device)
-                print(f"as yb.shape {yb.shape}")
-                exit(0)
+                xb, yb = xb.to(config.device), yb.to(config.device)
+                logits = model(xb)
+                loss = criterion(logits, yb)
+                optimizer.zero_grad()
+                loss.backward()
+                optimizer.step()
+
+                _, preds = torch.max(logits, 1)
+
+                # Get pixel loss across batch
+                train_loss += loss.item() * yb.numel()
+                train_correct += (preds == yb).sum().item()
+                train_total_pixels += yb.numel()
+
+                total_dice += dice_score(logits, yb).item() * xb.size(0)
+                total_samples += xb.size(0)
+                pbar.set_postfix(loss=loss.item())
 
 
 def load_test_model(val_dl, config):
