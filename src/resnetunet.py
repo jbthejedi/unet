@@ -1,0 +1,497 @@
+import wandb
+from pprint import pprint
+import os
+import yaml
+# import hydra
+import random
+import torch
+
+import torchvision.models as models
+import numpy as np
+import torch.nn.functional as F
+import torchvision.transforms as T
+import torch.nn as nn
+import matplotlib.pyplot as plt
+import torchvision.transforms.functional as TF
+
+# import albumentations as A
+# from albumentations.pytorch import ToTensorV2
+
+from torch.optim.lr_scheduler import CosineAnnealingLR
+from tqdm import tqdm
+from omegaconf import OmegaConf
+from dataclasses import dataclass
+from torchvision.datasets import OxfordIIITPet
+from torch.utils.data import DataLoader, Subset, random_split
+from omegaconf import DictConfig
+
+
+class DoubleConv(nn.Module):
+    def __init__(
+            self, in_channels,
+            out_channels,
+            p_dropout=None
+    ):
+        super().__init__()
+        layers = [
+            nn.Conv2d(in_channels, out_channels, 3, padding=1),
+            nn.BatchNorm2d(out_channels),
+            nn.ReLU(inplace=True),
+            nn.Conv2d(out_channels, out_channels, 3, padding=1),
+            nn.BatchNorm2d(out_channels),
+            nn.ReLU(inplace=True),
+        ]
+        if p_dropout:
+            print("has dropout")
+            layers.append(nn.Dropout(p=p_dropout))
+        self.double_conv = nn.Sequential(*layers)
+
+    def forward(self, x):
+        return self.double_conv(x)
+
+
+# ================================================================
+# Layer (type)         Output Shape         Param #    ...
+# ================================================================
+# conv1                [1,  64, 112, 112]   9.5K
+# bn1                  [1,  64, 112, 112]   128
+# maxpool              [1,  64,  56,  56]   0
+# layer1               [1,  64,  56,  56]   ...
+# layer2               [1, 128,  28,  28]   ...
+# layer3               [1, 256,  14,  14]   ...
+# layer4               [1, 512,   7,   7]   ...
+class UpBlock(nn.Module):
+
+    """Upsample → DoubleConv, with optional skip-concat"""
+    def __init__(self, in_ch, out_ch):
+        super().__init__()
+        self.up = nn.ConvTranspose2d(in_ch, in_ch // 2, kernel_size=2, stride=2) # Double H,W dims
+        self.conv = DoubleConv(in_ch, out_ch)
+
+        self.up_special = nn.ConvTranspose2d(in_ch, in_ch, kernel_size=2, stride=2) # Double H,W dims
+        self.conv_special = DoubleConv(in_ch * 2, in_ch)
+
+    def forward(self, x, skip: torch.Tensor = None):
+        if x.size(1) == skip.size(1):
+            x = self.up_special(x) # -> (8, 64, 112, 112)
+            cat = torch.cat([x, skip], dim=1) # -> (8, 128, 112, 112)
+            x = self.conv_special(cat) # -> (8, 64, 112, 112)
+            return x
+        x = self.up(x)
+
+        diffY = skip.size(2) - x.size(2)
+        diffX = skip.size(3) - x.size(3)
+        pad_left = diffX//2
+        pad_right = diffX - diffX//2
+        pad_top = diffY//2
+        pad_bottom = diffY - diffY//2
+        x = F.pad(x, [pad_left, pad_right, pad_top, pad_bottom])
+
+        x = torch.cat([skip, x], dim=1)
+        return self.conv(x)
+
+class ResNetUNet(nn.Module):
+    def __init__(self, n_classes):
+        super().__init__()
+        # 1) Load ResNet-34 & grab layers
+        base_model = models.resnet34(pretrained=True)
+        self.layer0 = nn.Sequential(
+            base_model.conv1,  # 64, /2
+            base_model.bn1,
+            base_model.relu,
+        )
+        self.pool0  = base_model.maxpool   # /2 again → 56×56 from 224
+        
+        self.layer1 = base_model.layer1    # 64, → 56×56
+        self.layer2 = base_model.layer2    # 128 → 28×28
+        self.layer3 = base_model.layer3    # 256 → 14×14
+        self.layer4 = base_model.layer4    # 512 →  7×7
+
+        # 2) Decoder: upsample + double-convs
+        self.up4 = UpBlock(512, 256)  # input is layer4 out
+        self.up3 = UpBlock(256, 128)
+        self.up2 = UpBlock(128,  64)
+        self.up1 = UpBlock(64,   64)
+        # self.up0 = UpBlock(64,   32)
+        self.up0 = nn.ConvTranspose2d(64, 32, kernel_size=2, stride=2)
+
+        # 3) Final 1×1 conv → class logits
+        self.classifier = nn.Conv2d(32, n_classes, kernel_size=1)
+
+    def forward(self, x):
+        # Encoder
+        x0 = self.layer0(x)    # → (N,64,112,112)
+        x1 = self.pool0(x0)    # → (N,64, 56,56)
+        x2 = self.layer1(x1)   # → (N,64, 56,56)
+        x3 = self.layer2(x2)   # → (N,128,28,28)
+        x4 = self.layer3(x3)   # → (N,256,14,14)
+
+        x5 = self.layer4(x4)   # → (N,512, 7, 7)  ← bottleneck
+
+        # Decoder
+        d4 = self.up4(x5, x4)  # → (N,256,14,14)
+        d3 = self.up3(d4, x3)  # → (N,128,28,28)
+        d2 = self.up2(d3, x2)  # → (N, 64,56,56)
+        d1 = self.up1(d2, x0)  # → (N, 64,112,112)
+        d0 = self.up0(d1)      # → (N, 32,224,224)
+
+        return self.classifier(d0)
+
+def dice_score(logits, labels, fg_classes=[0], eps=1e-6):
+    """Computes mean Dice score for a batch."""
+    # print(f"logits.shape {logits.shape}")
+    preds = torch.argmax(logits, dim=1)  # [B, H, W]
+    # print(f"preds.shape {preds.shape}")
+    dice = 0.0
+    for c in fg_classes:
+        pred_c = (preds == c).float()
+        label_c = (labels == c).float()
+        intersection = (pred_c * label_c).sum()
+        union = pred_c.sum() + label_c.sum()
+        dice += (2. * intersection + eps) / (union + eps)
+    return dice / len(fg_classes)
+
+
+def visualize_dataset_grid(dataset, num_samples=6, cols=3):
+    rows = (num_samples + cols - 1) // cols
+    fig, axs = plt.subplots(rows * 2, cols, figsize=(cols * 4, rows * 2.5))
+
+    for i in range(num_samples):
+        image, mask = dataset[i]
+        r = (i // cols) * 2
+        c = i % cols
+
+        axs[r, c].imshow(TF.to_pil_image(image))
+        axs[r, c].set_title(f"Image {i}")
+        axs[r, c].axis("off")
+
+        axs[r + 1, c].imshow(mask, cmap="gray", vmin=0, vmax=2)
+        axs[r + 1, c].set_title(f"Mask {i}")
+        axs[r + 1, c].axis("off")
+
+    # Hide any unused subplots
+    total_plots = rows * cols
+    for j in range(num_samples, total_plots):
+        axs[(j // cols) * 2, j % cols].axis("off")
+        axs[(j // cols) * 2 + 1, j % cols].axis("off")
+
+    plt.tight_layout()
+    plt.show()
+
+# Define a color palette for your three classes (pets, background, boundary-ignored)
+PALETTE = np.array([
+    [255, 0,   0],    # class 0 (pet) → red
+    [0,   255, 0],    # class 1 (background) → green
+    [0,   0,   255],  # class 2 (boundary/ignored) → blue (we’ll drop this in overlay)
+], dtype=np.uint8)
+
+def mask_to_color(mask):
+    """
+    mask:  H×W  numpy array of ints in [0, num_classes)
+    returns: H×W×3 uint8 RGB array
+    """
+    h, w = mask.shape
+    color_mask = np.zeros((h, w, 3), dtype=np.uint8)
+    for c in range(PALETTE.shape[0]):
+        color_mask[mask == c] = PALETTE[c]
+    return color_mask
+
+def visualize_predictions(model, dataloader, device, num_batches=5):
+    model.eval()
+    with torch.no_grad():
+        for i, (xb, yb) in enumerate(dataloader):
+            print(f"iteration {i}")
+            xb = xb.to(device)
+            yb = yb.squeeze(1).cpu().numpy()    # [B, H, W]
+            logits = model(xb)                  # [B, C, H, W]
+            preds = torch.argmax(logits, dim=1).cpu().numpy()  # [B, H, W]
+
+            batch_size = xb.size(0)
+            for j in range(batch_size):
+                print(f"j {j}")
+                img = TF.to_pil_image(xb[j].cpu())
+                gt_mask = yb[j]
+                pred_mask = preds[j]
+
+                # Convert to color
+                gt_color = mask_to_color(gt_mask)
+                pred_color = mask_to_color(pred_mask)
+
+                # Overlay prediction on image
+                img_np = np.array(img)
+                overlay = img_np.copy()
+                alpha = 0.5
+                # only overlay pet class (class 0) for clarity
+                pet_region = (pred_mask == 0)
+                overlay[pet_region] = (
+                    img_np[pet_region] * (1 - alpha) +
+                    PALETTE[0] * alpha
+                ).astype(np.uint8)
+
+                # Plot side-by-side
+                fig, axes = plt.subplots(1, 4, figsize=(16, 4))
+                axes[0].imshow(img);            axes[0].set_title("Image");     axes[0].axis("off")
+                axes[1].imshow(gt_color);       axes[1].set_title("GT Mask");  axes[1].axis("off")
+                axes[2].imshow(pred_color);     axes[2].set_title("Pred Mask");axes[2].axis("off")
+                axes[3].imshow(overlay);        axes[3].set_title("Overlay");  axes[3].axis("off")
+                plt.tight_layout()
+                plt.show()
+
+            if i + 1 >= num_batches:
+                print(f"i + 1 {i + 1}")
+                print(f"numbatches {num_batches}")
+                print("breaking")
+                break
+        print("end")
+
+
+def adjust_target_mask(x):
+    return x.long().squeeze(0) - 1
+
+
+def configure_dataset(config):
+    """
+    Geometric (flip/rotate/scale/shear) → helps the network generalize to different poses & framing.
+    Photometric (brightness/contrast/hue/blur) → helps the network be robust to lighting & camera variation.
+    """
+    if config.device == 'cuda':
+        transform = T.Compose([
+            T.Resize((config.image_size, config.image_size)),
+            T.RandomHorizontalFlip(),
+            T.RandomRotation(degrees=15),
+            T.ColorJitter(brightness=0.3, contrast=0.3, saturation=0.3, hue=0.1),
+            T.RandomGrayscale(p=0.1),
+            T.GaussianBlur(kernel_size=3),
+            T.ToTensor(),
+        ])
+        # transform = T.Compose([
+        #     T.Resize((config.image_size, config.image_size)),
+        #     T.RandomHorizontalFlip(),
+        #     T.ColorJitter(),
+        #     T.RandomResizedCrop(config.image_size, scale=(0.8, 1.0)),
+        #     T.ToTensor(),
+        #     ToTensorV2(),
+        # ])
+    else:
+        transform = T.Compose([
+            T.Resize((config.image_size, config.image_size)),
+            T.ToTensor(),
+        ])
+
+    target_transform = T.Compose([
+        T.Resize((config.image_size, config.image_size)),
+        T.PILToTensor(),
+        T.Lambda(adjust_target_mask)
+    ])
+
+    dataset = OxfordIIITPet(
+        root=config.data_root,
+        download=True,
+        target_types='segmentation',
+        transform=transform,
+        target_transform=target_transform
+    )
+    return dataset
+    
+def get_train_val_dl(dataset, config):
+    if config.test_run:
+        indices = random.sample(range(len(dataset)), config.sample_size)
+        dataset = Subset(dataset, indices)
+
+    train_len = int(0.9 * len(dataset))
+    train_ds, val_ds = random_split(dataset, [train_len, len(dataset) - train_len])
+    train_dl = DataLoader(
+        train_ds,
+        batch_size=config.batch_size,
+        shuffle=True,
+        num_workers=config.num_workers,
+        pin_memory=True,
+    )
+    val_dl = DataLoader(
+        val_ds,
+        batch_size=config.batch_size,
+        shuffle=False,
+        num_workers=config.num_workers,
+        pin_memory=True,
+    )
+    return train_dl, val_dl
+    
+def train_and_validate_model(train_dl, val_dl, config):
+    config_dict = OmegaConf.to_container(config, resolve=True)
+    wandb.init(
+        project=config.project,
+        name=config.name,
+        config=config_dict,
+        mode=config.wandb_mode,
+    )
+
+    model = ResNetUNet(n_classes=3).to(config.device)
+    # label indexes (pets, background, boundary)
+    weights = torch.tensor([1.3, 1.0, 0.0], device=config.device)
+    criterion = nn.CrossEntropyLoss(weight=weights, ignore_index=2)
+    optimizer = torch.optim.Adam(model.parameters(), lr=config.lr, weight_decay=1e-5)
+    scheduler = CosineAnnealingLR(
+        optimizer,
+        T_max=config.n_epochs,
+        eta_min=1e-6
+    )
+
+    for epoch in range(1, config.n_epochs+1):
+        tqdm.write(f"Epoch {epoch}/{config.n_epochs+1}")
+        model.train()
+        best_val_dice = 0.0
+        with tqdm(train_dl, desc="Training") as pbar:
+            train_loss = 0.0
+            train_correct = 0.0
+            total_dice = 0.0
+            train_total_pixels = 0
+            total_samples = 0
+            for xb, yb in pbar:
+                xb, yb = xb.to(config.device), yb.to(config.device)
+                logits = model(xb)
+                loss = criterion(logits, yb)
+                optimizer.zero_grad()
+                loss.backward()
+                optimizer.step()
+
+                _, preds = torch.max(logits, 1)
+
+                train_loss += loss.item() * yb.numel()
+                train_correct += (preds == yb).sum().item()
+                train_total_pixels += yb.numel()
+
+                total_dice += dice_score(logits, yb).item() * xb.size(0)
+                total_samples += xb.size(0)
+
+                pbar.set_postfix(loss=loss.item())
+
+            train_epoch_loss = train_loss / train_total_pixels
+            train_epoch_acc = train_correct / train_total_pixels
+            train_epoch_dice = total_dice / total_samples
+            tqdm.write(f"""
+            Train Loss {train_epoch_loss:.4f} Train Acc {train_epoch_acc:.2f} 
+            Train Dice {train_epoch_dice:.4f}""")
+
+        model.eval()
+        with tqdm(val_dl, desc="Validation") as pbar:
+            with torch.no_grad():
+                val_loss = 0.0
+                val_correct = 0.0
+                val_total = 0
+                total_dice = 0.0
+                total_samples = 0
+                for xb, yb in pbar:
+                    xb, yb = xb.to(config.device), yb.to(config.device)
+                    logits = model(xb)
+                    loss = criterion(logits, yb)
+
+                    _, preds = torch.max(logits, 1)
+                    val_correct += (preds == yb).sum().item()
+                    val_loss += loss.item() * yb.numel()
+                    val_total += yb.numel()
+
+                    total_dice += dice_score(logits, yb).item() * xb.size(0)
+                    total_samples += xb.size(0)
+
+                    pbar.set_postfix(loss=loss.item())
+
+                val_epoch_loss = val_loss / val_total
+                val_epoch_acc = val_correct / val_total
+                val_epoch_dice = total_dice / total_samples
+                tqdm.write(f"""
+                    Val Loss {val_epoch_loss:.4f} Val Acc {val_epoch_acc:.2f} 
+                    Val Dice {val_epoch_dice:.4f}""")
+                pbar.set_postfix(loss=loss.item())
+
+                if config.device == 'cuda' and config.save_model and val_epoch_dice > best_val_dice:
+                    tqdm.write("Writing best model...")
+                    best_val_dice = val_epoch_dice
+                    torch.save(model.state_dict(), "best_model.pth")
+                    artifact = wandb.Artifact(name=f"{config.name}_best_model", type="model")
+                    artifact.add_file("best_model.pth")
+                    wandb.log_artifact(artifact)
+                    tqdm.write("Model written.")
+        wandb.log({
+            "epoch": epoch,
+            "train/loss": train_epoch_loss,
+            "train/acc": train_epoch_acc,
+            "train/dice": train_epoch_dice,
+            "val/loss": val_epoch_loss,
+            "val/acc": val_epoch_acc,
+            "val/dice": val_epoch_dice,
+            "lr": scheduler.get_last_lr()[0],
+        })
+        scheduler.step()
+        tqdm.write(f"Lr {scheduler.get_last_lr()[0]:.2e}")
+    wandb.finish()
+    if cfg.get("visualize_predictions"):
+        visualize_predictions(model, val_dl, config.device, num_batches=1)
+
+
+def load_and_test_model(config, val_dl):
+    # Setup W&B API
+    # Replace with your actual project, run, and artifact names
+    api = wandb.Api()
+    artifact_name = config.artifact_name
+    try:
+        artifact = api.artifact(artifact_name, type='model')
+        artifact_dir = artifact.download()
+
+        # Load model
+        model = ResNetUNet(n_classes=3)
+        model.load_state_dict(torch.load(f"{artifact_dir}/best_model.pth", map_location="cpu"))
+        model.eval()
+        print("Model loaded successfully.")
+    except wandb.CommError as e:
+        model = ResNetUNet(n_classes=3).to(config.device)
+        print(f"Artifact not found: {artifact_name}")
+        print(f"Error: {e}")
+    visualize_predictions(model, val_dl, config.device, num_batches=10)
+
+
+def main(config):
+    torch.manual_seed(config.seed)
+    print(f"Seed {config.seed}")
+
+    print("Config device", config.device)
+    device = torch.device(config.device if torch.cuda.is_available() else "cpu")
+    print(f"Running on {device}")
+
+    dataset = configure_dataset(config)
+    # visualize_dataset_grid(dataset, num_samples=8)
+    train_dl, val_dl = get_train_val_dl(dataset, config)
+
+    if config.test_model:
+        load_and_test_model(config, val_dl)
+    elif config.train_model:
+        train_and_validate_model(train_dl, val_dl, config)
+
+
+def load_config(env="local"):
+    base_config = OmegaConf.load("config/base.yaml")
+
+    env_path = f"config/{env}.yaml"
+    if os.path.exists(env_path):
+        env_config = OmegaConf.load(env_path)
+        # Merges env_config into base_config (env overrides base)
+        config = OmegaConf.merge(base_config, env_config)
+    else:
+        config = base_config
+
+    return config
+
+if __name__ == "__main__":
+    env = os.environ.get("ENV", "local")  # default to 'local'
+    cfg = load_config(env)
+
+    print(f"Running in {env} environment")
+    cfg_dict = OmegaConf.to_container(cfg, resolve=True)
+    pprint(cfg_dict)
+    print(type(cfg))
+
+    main(cfg)
+
+
+
+
+

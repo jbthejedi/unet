@@ -1,7 +1,7 @@
 name: unet-local
 
 batch_size: 8
-image_size: 128
+image_size: 224
 n_epochs: 7
 device: cpu
 data_root: /Users/justinbarry/projects/unet/data/
