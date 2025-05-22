@@ -359,7 +359,7 @@ def train_and_validate_model(train_dl, val_dl, config):
                     Val Dice {val_epoch_dice:.4f}""")
                 pbar.set_postfix(loss=loss.item())
 
-                if config.device == 'cuda' and val_epoch_dice > best_val_dice:
+                if config.device == 'cuda' and config.save_model and val_epoch_dice > best_val_dice:
                     tqdm.write("Writing best model...")
                     best_val_dice = val_epoch_dice
                     torch.save(model.state_dict(), "best_model.pth")
@@ -377,7 +377,7 @@ def train_and_validate_model(train_dl, val_dl, config):
             "val/dice": val_epoch_dice,
             "lr": scheduler.get_last_lr()[0],
         })
-        sheduler.step()
+        scheduler.step()
         tqdm.write(f"Lr {scheduler.get_last_lr()[0]:.2e}")
     wandb.finish()
     if cfg.get("visualize_predictions"):

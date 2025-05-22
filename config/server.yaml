@@ -14,3 +14,4 @@ num_workers: 15
 
 test_model: False
 train_model: True
+save_model: False

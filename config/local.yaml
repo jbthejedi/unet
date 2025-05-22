@@ -16,3 +16,4 @@ num_workers: 4
 test_model: False
 train_model: True
 artifact_name: jbarry-team/unet-oxford-pet/unet-server-batch-norm_best_model:latest
+save_model: False
