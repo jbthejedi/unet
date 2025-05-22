@@ -7,7 +7,7 @@ apt update && apt install vim -y && apt install screen -y
 
 # Copy contents to file install_gh.sh
 # Contents of install_gh.sh
-```
+``
 (type -p wget >/dev/null || (apt update && apt-get install wget -y)) \
 	&& mkdir -p -m 755 /etc/apt/keyrings \
         && out=$(mktemp) && wget -nv -O$out https://cli.github.com/packages/githubcli-archive-keyring.gpg \
@@ -42,5 +42,4 @@ using install_mc.sh
 /workspace/miniconda3/bin/conda init && source ~/.bashrc
 
 # Create env
-conda create -n unet python=3.10 && conda activate unet
-pip install -r requirements.txt
+conda create -n unet python=3.10 && conda activate unet && pip install -r requirements.txt

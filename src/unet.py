@@ -15,6 +15,7 @@ import torchvision.transforms.functional as TF
 # import albumentations as A
 # from albumentations.pytorch import ToTensorV2
 
+from torch.optim.lr_scheduler import CosineAnnealingLR
 from tqdm import tqdm
 from omegaconf import OmegaConf
 from dataclasses import dataclass
@@ -27,16 +28,21 @@ class DoubleConv(nn.Module):
     def __init__(
             self, in_channels,
             out_channels,
+            p_dropout=None
     ):
         super().__init__()
-        self.double_conv = nn.Sequential(
+        layers = [
             nn.Conv2d(in_channels, out_channels, 3, padding=1),
             nn.BatchNorm2d(out_channels),
             nn.ReLU(inplace=True),
             nn.Conv2d(out_channels, out_channels, 3, padding=1),
             nn.BatchNorm2d(out_channels),
             nn.ReLU(inplace=True),
-        )
+        ]
+        if p_dropout:
+            print("has dropout")
+            layers.append(nn.Dropout(p=p_dropout))
+        self.double_conv = nn.Sequential(*layers)
 
     def forward(self, x):
         return self.double_conv(x)
@@ -47,6 +53,7 @@ class UNet(nn.Module):
             self,
             in_channels,
             out_channels,
+            config,
     ):
         super().__init__()
         self.down1 = DoubleConv(in_channels, 64) # -> (64, 128, 128)
@@ -61,9 +68,9 @@ class UNet(nn.Module):
         self.middle = DoubleConv(512, 1024) # -> (1024, 8, 8)
 
         self.up4 = nn.ConvTranspose2d(1024, 512, 2, stride=2) # (512, 16, 16)
-        self.conv4 = DoubleConv(1024, 512) # (512, 16, 16)
+        self.conv4 = DoubleConv(1024, 512, p_dropout=config.p_dropout) # (512, 16, 16)
         self.up3 = nn.ConvTranspose2d(512, 256, 2, stride=2) # (256, 32, 32)
-        self.conv3 = DoubleConv(512, 256) # (256, 32, 32)
+        self.conv3 = DoubleConv(512, 256, p_dropout=config.p_dropout) # (256, 32, 32)
         self.up2 = nn.ConvTranspose2d(256, 128, 2, stride=2) # (128, 64, 64)
         self.conv2 = DoubleConv(256, 128) # (128, 64, 64)
         self.up1 = nn.ConvTranspose2d(128, 64, 2, stride=2) # (64, 128, 128)
@@ -145,10 +152,11 @@ def mask_to_color(mask):
         color_mask[mask == c] = PALETTE[c]
     return color_mask
 
-def visualize_predictions(model, dataloader, device, num_batches=1):
+def visualize_predictions(model, dataloader, device, num_batches=5):
     model.eval()
     with torch.no_grad():
         for i, (xb, yb) in enumerate(dataloader):
+            print(f"iteration {i}")
             xb = xb.to(device)
             yb = yb.squeeze(1).cpu().numpy()    # [B, H, W]
             logits = model(xb)                  # [B, C, H, W]
@@ -156,6 +164,7 @@ def visualize_predictions(model, dataloader, device, num_batches=1):
 
             batch_size = xb.size(0)
             for j in range(batch_size):
+                print(f"j {j}")
                 img = TF.to_pil_image(xb[j].cpu())
                 gt_mask = yb[j]
                 pred_mask = preds[j]
@@ -185,7 +194,11 @@ def visualize_predictions(model, dataloader, device, num_batches=1):
                 plt.show()
 
             if i + 1 >= num_batches:
+                print(f"i + 1 {i + 1}")
+                print(f"numbatches {num_batches}")
+                print("breaking")
                 break
+        print("end")
 
 
 def adjust_target_mask(x):
@@ -268,11 +281,16 @@ def train_and_validate_model(train_dl, val_dl, config):
         mode=config.wandb_mode,
     )
 
-    model = UNet(in_channels=3, out_channels=3).to(config.device)
+    model = UNet(in_channels=3, out_channels=3, config=config).to(config.device)
     # label indexes (pets, background, boundary)
     weights = torch.tensor([1.3, 1.0, 0.0], device=config.device)
     criterion = nn.CrossEntropyLoss(weight=weights, ignore_index=2)
-    optimizer = torch.optim.Adam(model.parameters(), lr=config.lr)
+    optimizer = torch.optim.Adam(model.parameters(), lr=config.lr, weight_decay=1e-5)
+    scheduler = CosineAnnealingLR(
+        optimizer,
+        T_max=config.n_epochs,
+        eta_min=1e-6
+    )
 
     for epoch in range(1, config.n_epochs+1):
         tqdm.write(f"Epoch {epoch}/{config.n_epochs+1}")
@@ -349,7 +367,6 @@ def train_and_validate_model(train_dl, val_dl, config):
                     artifact.add_file("best_model.pth")
                     wandb.log_artifact(artifact)
                     tqdm.write("Model written.")
-
         wandb.log({
             "epoch": epoch,
             "train/loss": train_epoch_loss,
@@ -358,8 +375,10 @@ def train_and_validate_model(train_dl, val_dl, config):
             "val/loss": val_epoch_loss,
             "val/acc": val_epoch_acc,
             "val/dice": val_epoch_dice,
-            "lr": optimizer.param_groups[0]['lr']
+            "lr": scheduler.get_last_lr()[0],
         })
+        sheduler.step()
+        tqdm.write(f"Lr {scheduler.get_last_lr()[0]:.2e}")
     wandb.finish()
     if cfg.get("visualize_predictions"):
         visualize_predictions(model, val_dl, config.device, num_batches=1)
@@ -369,21 +388,21 @@ def load_and_test_model(config, val_dl):
     # Setup W&B API
     # Replace with your actual project, run, and artifact names
     api = wandb.Api()
-    artifact_name = 'jbarry-team/unet-oxford-pet/unet-server_best_model:latest'
+    artifact_name = config.artifact_name
     try:
         artifact = api.artifact(artifact_name, type='model')
         artifact_dir = artifact.download()
 
         # Load model
-        model = UNet(in_channels=3, out_channels=3)
+        model = UNet(in_channels=3, out_channels=3, config=config)
         model.load_state_dict(torch.load(f"{artifact_dir}/best_model.pth", map_location="cpu"))
         model.eval()
         print("Model loaded successfully.")
     except wandb.CommError as e:
-        model = UNet(in_channels=3, out_channels=3).to(config.device)
+        model = UNet(in_channels=3, out_channels=3, config=config).to(config.device)
         print(f"Artifact not found: {artifact_name}")
         print(f"Error: {e}")
-    visualize_predictions(model, val_dl, config.device, num_batches=1)
+    visualize_predictions(model, val_dl, config.device, num_batches=10)
 
 
 def main(config):

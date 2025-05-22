@@ -11,3 +11,4 @@ ignore_index: 2
 
 lr: 1e-4
 
+p_dropout: 0.1
