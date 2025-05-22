@@ -1,7 +1,5 @@
-name: unet-server-batch-norm
+name: unet-server-dropout-lrscheduler
 
-batch_size: 32
-image_size: 224
 n_epochs: 40
 device: cuda
 data_root: /workspace/unet/data
