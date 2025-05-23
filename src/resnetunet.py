@@ -280,15 +280,16 @@ def get_val_transforms(image_size):
 
 # Added
 class PetSegDataset(Dataset):
-    def __init__(self, root, split, transform, ignore_index):
+    def __init__(self, base, transform, ignore_index):
         super().__init__()
         # use torchvision’s split argument instead of internal indices
-        self.base = OxfordIIITPet(
-            root=root,
-            split=split,                    # 'trainval' or 'test'
-            target_types='segmentation',
-            download=True
-        )
+        # self.base = OxfordIIITPet(
+        #     root=root,
+        #     split=split,                    # 'trainval' or 'test'
+        #     target_types='segmentation',
+        #     download=True
+        # )
+        self.base = base
         self.transform = transform
         self.ignore_index = ignore_index
 
@@ -311,35 +312,49 @@ class PetSegDataset(Dataset):
         return img_t, mask_t
 
 
+def make_split_indices(n, split=0.9, seed=1337):
+    idxs = list(range(n))
+    random.Random(seed).shuffle(idxs)
+    cut = int(split * n)
+    return idxs[:cut], idxs[cut:]
+
+
 def configure_dataset(config):
-    train_ds = PetSegDataset(
-        root=config.data_root,
-        split='trainval',
-        transform=get_train_transforms(config.image_size),
-        ignore_index=2
-    )
-    val_ds  = PetSegDataset(
-        root=config.data_root,
-        split='test',
-        transform=get_val_transforms(config.image_size),
-        ignore_index=2
-    )
-    return train_ds, val_ds
+
+    base = OxfordIIITPet(root=config.data_root,
+                     split="trainval",
+                     target_types="segmentation",
+                     download=True)
+
+    train_ds = PetSegDataset(base, transform=get_train_transforms(config.image_size), ignore_index=2)
+    val_ds   = PetSegDataset(base, transform=get_val_transforms(config.image_size),   ignore_index=2)
+    train_idxs, val_idxs = make_split_indices(len(base), split=config.p_train_len, seed=config.seed)
+    train_ds = Subset(train_ds, train_idxs)
+    val_ds   = Subset(val_ds,   val_idxs)
+    print(f"Size of datasets: len(train) {len(train_ds)} len(val) {len(val_ds)}")
+
+    if config.test_run:
+        idxs = random.sample(range(len(train_ds)), config.sample_size)
+        train_ds = Subset(train_ds, idxs)
+        idxs = random.sample(range(len(val_ds)),   config.sample_size)
+        val_ds   = Subset(val_ds,   idxs)
+        print(f"Downsampling data: len(train) {len(train_ds)} len(val) {len(val_ds)}")
+
+    base = OxfordIIITPet(root=config.data_root,
+                     split="test",
+                     target_types="segmentation",
+                     download=True)
+    # test_ds = PetSegDataset(
+    #     root=config.data_root,
+    #     split='test',
+    #     transform=get_val_transforms(config.image_size),
+    #     ignore_index=2
+    # )
+    test_ds = PetSegDataset(base, transform=get_val_transforms(config.image_size), ignore_index=2)
+    return train_ds, val_ds, test_ds
     
 
-def get_train_val_dl(dataset, config):
-    # if config.test_run:
-    #     indices = random.sample(range(len(dataset)), config.sample_size)
-    #     dataset = Subset(dataset, indices)
-    if config.test_run:
-        idxs = random.sample(range(len(dataset)), config.sample_size)
-        dataset = Subset(dataset, idxs)
-        # idxs = random.sample(range(len(val_ds)),   config.sample_size)
-        # val_ds   = Subset(val_ds,   idxs)
-
-    train_len = int(0.9 * len(dataset))
-    # train_ds, val_ds = random_split(dataset, [train_len, len(dataset) - train_len])
-    train_ds, val_ds = random_split(dataset, [train_len, len(dataset) - train_len])
+def get_train_val_dl(train_ds, val_ds, config):
     train_dl = DataLoader(
         train_ds,
         batch_size=config.batch_size,
@@ -563,7 +578,7 @@ def load_and_test_model(config):
         model.eval()
         print("Model loaded successfully.")
 
-        _, val_ds = configure_dataset(config)
+        _, _, val_ds = configure_dataset(config)
         val_dl  = DataLoader(val_ds, batch_size=config.batch_size)
         model = ResNetUNet(n_classes=3).to(config.device)
         visualize_predictions(model, val_dl, config.device, num_batches=10)
@@ -585,8 +600,8 @@ def main(config):
     elif config.train_model:
         # dataset = configure_dataset(config)
         # visualize_dataset_grid(dataset, num_samples=8)
-        trainval_ds, _ = configure_dataset(config)
-        train_dl, val_dl = get_train_val_dl(trainval_ds, config)
+        train_ds, val_ds, _ = configure_dataset(config)
+        train_dl, val_dl = get_train_val_dl(train_ds, val_ds, config)
         train_and_validate_model(train_dl, val_dl, config)
 
 
