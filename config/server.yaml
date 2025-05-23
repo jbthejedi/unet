@@ -1,4 +1,4 @@
-name: unet-server-dropout-lrscheduler
+name: unet-server-resnet
 
 batch_size: 32
 image_size: 224
@@ -15,3 +15,7 @@ num_workers: 15
 test_model: False
 train_model: True
 save_model: False
+
+# Unfreeze encoder parameters
+unfreeze_stage0: 6
+unfreeze_stage1: 10

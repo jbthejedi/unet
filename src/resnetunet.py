@@ -17,7 +17,7 @@ import torchvision.transforms.functional as TF
 # import albumentations as A
 # from albumentations.pytorch import ToTensorV2
 
-from torch.optim.lr_scheduler import CosineAnnealingLR
+from torch.optim.lr_scheduler import CosineAnnealingLR, CosineAnnealingWarmRestarts
 from tqdm import tqdm
 from omegaconf import OmegaConf
 from dataclasses import dataclass
@@ -143,14 +143,17 @@ def dice_score(logits, labels, fg_classes=[0], eps=1e-6):
     preds = torch.argmax(logits, dim=1)  # [B, H, W]
     # print(f"preds.shape {preds.shape}")
     dice = 0.0
+    iou = 0.0
     for c in fg_classes:
         pred_c = (preds == c).float()
         label_c = (labels == c).float()
         intersection = (pred_c * label_c).sum()
         union = pred_c.sum() + label_c.sum()
         dice += (2. * intersection + eps) / (union + eps)
-    return dice / len(fg_classes)
-
+        # Added
+        iou += (intersection + eps) / (union + eps)
+    dice, iou = dice / len(fg_classes), iou / len(fg_classes)
+    return dice, iou
 
 def visualize_dataset_grid(dataset, num_samples=6, cols=3):
     rows = (num_samples + cols - 1) // cols
@@ -254,6 +257,8 @@ def configure_dataset(config):
     Geometric (flip/rotate/scale/shear) → helps the network generalize to different poses & framing.
     Photometric (brightness/contrast/hue/blur) → helps the network be robust to lighting & camera variation.
     """
+    # Added
+    normalize = T.Normalize(mean=[0.485,0.456,0.406], std =[0.229,0.224,0.225])
     if config.device == 'cuda':
         transform = T.Compose([
             T.Resize((config.image_size, config.image_size)),
@@ -263,6 +268,7 @@ def configure_dataset(config):
             T.RandomGrayscale(p=0.1),
             T.GaussianBlur(kernel_size=3),
             T.ToTensor(),
+            normalize,
         ])
         # transform = T.Compose([
         #     T.Resize((config.image_size, config.image_size)),
@@ -276,6 +282,7 @@ def configure_dataset(config):
         transform = T.Compose([
             T.Resize((config.image_size, config.image_size)),
             T.ToTensor(),
+            normalize,
         ])
 
     target_transform = T.Compose([
@@ -316,6 +323,7 @@ def get_train_val_dl(dataset, config):
     )
     return train_dl, val_dl
     
+
 def train_and_validate_model(train_dl, val_dl, config):
     config_dict = OmegaConf.to_container(config, resolve=True)
     wandb.init(
@@ -326,24 +334,82 @@ def train_and_validate_model(train_dl, val_dl, config):
     )
 
     model = ResNetUNet(n_classes=3).to(config.device)
+
+    # Added
+    #### Freeze entire encoder (layer0–layer4), leave decoder & head trainable ####
+    for name, param in model.named_parameters():
+        if name.startswith("layer") or name.startswith("pool0") or name.startswith("layer0"):
+            param.requires_grad = False
+
     # label indexes (pets, background, boundary)
     weights = torch.tensor([1.3, 1.0, 0.0], device=config.device)
     criterion = nn.CrossEntropyLoss(weight=weights, ignore_index=2)
-    optimizer = torch.optim.Adam(model.parameters(), lr=config.lr, weight_decay=1e-5)
-    scheduler = CosineAnnealingLR(
+
+    # Added: Differential learning rates
+    # 1) param groups
+    enc = [*model.layer0.parameters(),
+        *model.layer1.parameters(),
+        *model.layer2.parameters(),
+        *model.layer3.parameters(),
+        *model.layer4.parameters()]
+    # dec = [p for p in model.parameters() if p not in enc]
+    dec = [
+        p for name, p in model.named_parameters()
+        if not name.startswith(("layer0","pool0","layer1","layer2","layer3","layer4"))
+    ]
+    optimizer = torch.optim.AdamW([
+        {"params": enc, "lr": config.enc_lr}, # Encoder LRs
+        {"params": dec, "lr": config.dec_lr}, # Decoder LRs
+    ], weight_decay=1e-5)
+    # optimizer = torch.optim.Adam(model.parameters(), lr=config.lr, weight_decay=config.weight_decay)
+
+    # Added
+    # Cosine scheduler that runs in periods
+    # T_0 = number of epochs in the first cycle
+    # T_mult = factor by which the cycle length grows each restart
+    scheduler = CosineAnnealingWarmRestarts(
         optimizer,
-        T_max=config.n_epochs,
-        eta_min=1e-6
+        T_0=config.t0,
+        T_mult=config.tmult,
+        eta_min=config.eta_min,
     )
+
+    # scheduler = CosineAnnealingLR(
+    #     optimizer,
+    #     T_max=config.n_epochs,
+    #     eta_min=1e-6
+    # )
 
     for epoch in range(1, config.n_epochs+1):
         tqdm.write(f"Epoch {epoch}/{config.n_epochs+1}")
+
+        # Added
+        # Warm-up first 2 epochs
+        if epoch <= 2:
+            for pg in optimizer.param_groups:
+                pg["lr"] = pg["lr"] * (epoch / 2)
+                print(f"Warm starting with lr {pg['lr']}")
+
+        # Added
+        # ——— Unfreeze logic ———
+        if epoch == config.unfreeze_stage0:
+            tqdm.write("Unfreezing layers 3 & 4")
+            # unfreeze last two stages
+            for p in model.layer3.parameters(): p.requires_grad = True
+            for p in model.layer4.parameters(): p.requires_grad = True
+
+        if epoch == config.unfreeze_stage1:
+            # unfreeze everything
+            tqdm.write("Unfreezing entire encoder")
+            for p in enc: p.requires_grad = True
+
         model.train()
         best_val_dice = 0.0
         with tqdm(train_dl, desc="Training") as pbar:
             train_loss = 0.0
             train_correct = 0.0
             total_dice = 0.0
+            total_iou = 0.0
             train_total_pixels = 0
             total_samples = 0
             for xb, yb in pbar:
@@ -360,7 +426,10 @@ def train_and_validate_model(train_dl, val_dl, config):
                 train_correct += (preds == yb).sum().item()
                 train_total_pixels += yb.numel()
 
-                total_dice += dice_score(logits, yb).item() * xb.size(0)
+                dice, iou = dice_score(logits, yb)
+                total_dice += dice.item() * xb.size(0)
+                total_iou += iou.item() * xb.size(0)
+
                 total_samples += xb.size(0)
 
                 pbar.set_postfix(loss=loss.item())
@@ -368,9 +437,10 @@ def train_and_validate_model(train_dl, val_dl, config):
             train_epoch_loss = train_loss / train_total_pixels
             train_epoch_acc = train_correct / train_total_pixels
             train_epoch_dice = total_dice / total_samples
+            train_epoch_iou = total_iou / total_samples
             tqdm.write(f"""
             Train Loss {train_epoch_loss:.4f} Train Acc {train_epoch_acc:.2f} 
-            Train Dice {train_epoch_dice:.4f}""")
+            Train Dice {train_epoch_dice:.4f} Train IoU {train_epoch_iou:.4f}""")
 
         model.eval()
         with tqdm(val_dl, desc="Validation") as pbar:
@@ -379,6 +449,7 @@ def train_and_validate_model(train_dl, val_dl, config):
                 val_correct = 0.0
                 val_total = 0
                 total_dice = 0.0
+                total_iou = 0.0
                 total_samples = 0
                 for xb, yb in pbar:
                     xb, yb = xb.to(config.device), yb.to(config.device)
@@ -390,7 +461,10 @@ def train_and_validate_model(train_dl, val_dl, config):
                     val_loss += loss.item() * yb.numel()
                     val_total += yb.numel()
 
-                    total_dice += dice_score(logits, yb).item() * xb.size(0)
+                    dice, iou = dice_score(logits, yb)
+                    total_dice += dice.item() * xb.size(0)
+                    total_iou += iou.item() * xb.size(0)
+
                     total_samples += xb.size(0)
 
                     pbar.set_postfix(loss=loss.item())
@@ -398,9 +472,10 @@ def train_and_validate_model(train_dl, val_dl, config):
                 val_epoch_loss = val_loss / val_total
                 val_epoch_acc = val_correct / val_total
                 val_epoch_dice = total_dice / total_samples
+                val_epoch_iou = total_iou / total_samples
                 tqdm.write(f"""
                     Val Loss {val_epoch_loss:.4f} Val Acc {val_epoch_acc:.2f} 
-                    Val Dice {val_epoch_dice:.4f}""")
+                    Val Dice {val_epoch_dice:.4f} Val IoU {val_epoch_iou:.4f}""")
                 pbar.set_postfix(loss=loss.item())
 
                 if config.device == 'cuda' and config.save_model and val_epoch_dice > best_val_dice:
@@ -489,9 +564,10 @@ if __name__ == "__main__":
     pprint(cfg_dict)
     print(type(cfg))
 
+    # from torchinfo import summary       # or torchsummary
+    # import torchvision.models as models
+
+    # model = models.resnet34(pretrained=True)
+    # summary(model, input_size=(1, 3, 224, 224))
+
     main(cfg)
-
-
-
-
-

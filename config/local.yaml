@@ -7,7 +7,7 @@ device: cpu
 data_root: /Users/justinbarry/projects/unet/data/
 
 test_run: True
-sample_size: 400
+sample_size: 30
 wandb_mode: disabled
 
 visualize_predictions: False
@@ -17,3 +17,7 @@ test_model: False
 train_model: True
 artifact_name: jbarry-team/unet-oxford-pet/unet-server-batch-norm_best_model:latest
 save_model: False
+
+# Unfreeze encoder parameters
+unfreeze_stage0: 3
+unfreeze_stage1: 4
