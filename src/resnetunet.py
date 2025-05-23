@@ -277,11 +277,6 @@ def get_val_transforms(image_size):
         ToTensorV2(),
     ])
 
-def get_display_transforms(image_size):
-    return A.Compose([
-      A.Resize(image_size, image_size),
-      ToTensorV2(),    # no Normalize
-    ])
 
 # Added
 class PetSegDataset(Dataset):
@@ -332,18 +327,19 @@ def configure_dataset(config):
     return train_ds, val_ds
     
 
-def get_train_val_dl(train_ds, val_ds, config):
+def get_train_val_dl(dataset, config):
     # if config.test_run:
     #     indices = random.sample(range(len(dataset)), config.sample_size)
     #     dataset = Subset(dataset, indices)
     if config.test_run:
-        idxs = random.sample(range(len(train_ds)), config.sample_size)
-        train_ds = Subset(train_ds, idxs)
-        idxs = random.sample(range(len(val_ds)),   config.sample_size)
-        val_ds   = Subset(val_ds,   idxs)
+        idxs = random.sample(range(len(dataset)), config.sample_size)
+        dataset = Subset(dataset, idxs)
+        # idxs = random.sample(range(len(val_ds)),   config.sample_size)
+        # val_ds   = Subset(val_ds,   idxs)
 
-    # train_len = int(0.9 * len(dataset))
+    train_len = int(0.9 * len(dataset))
     # train_ds, val_ds = random_split(dataset, [train_len, len(dataset) - train_len])
+    train_ds, val_ds = random_split(dataset, [train_len, len(dataset) - train_len])
     train_dl = DataLoader(
         train_ds,
         batch_size=config.batch_size,
@@ -362,6 +358,25 @@ def get_train_val_dl(train_ds, val_ds, config):
     
 
 def train_and_validate_model(train_dl, val_dl, config):
+    config_dict = OmegaConf.to_container(config, resolve=True)
+    wandb.init(
+        project=config.project,
+        name=config.name,
+        config=config_dict,
+        mode=config.wandb_mode,
+    )
+
+    # Added
+    # if config.save_model:
+    #     val_indices = val_ds.indices  # e.g. from random_split
+    #     np.save("val_indices.npy", val_indices)
+    #     dataset_art = wandb.Artifact(
+    #         name=f"{config.name}-val-dataset",     
+    #         type="dataset",
+    #         description="Indices for validation split"
+    #     )
+    #     dataset_art.add_file("val_indices.npy")
+    #     wandb.log_artifact(dataset_art)
 
     model = ResNetUNet(n_classes=3).to(config.device)
 
@@ -548,17 +563,9 @@ def load_and_test_model(config):
         model.eval()
         print("Model loaded successfully.")
 
-        val_indices = np.load(f"{artifact_dir}/val_indices.npy", allow_pickle=True).tolist()
-        full_ds = PetSegDataset(
-            root=config.data_root, split="trainval",
-            transform=get_display_transforms(config.image_size),
-            ignore_index=2
-        )
-        val_ds  = Subset(full_ds, val_indices)
+        _, val_ds = configure_dataset(config)
         val_dl  = DataLoader(val_ds, batch_size=config.batch_size)
-
         model = ResNetUNet(n_classes=3).to(config.device)
-
         visualize_predictions(model, val_dl, config.device, num_batches=10)
     except wandb.CommError as e:
         print(f"Artifact not found: {artifact_name}")
@@ -579,29 +586,8 @@ def main(config):
         # dataset = configure_dataset(config)
         # visualize_dataset_grid(dataset, num_samples=8)
         train_ds, val_ds = configure_dataset(config)
-
-        config_dict = OmegaConf.to_container(config, resolve=True)
-        wandb.init(
-            project=config.project,
-            name=config.name,
-            config=config_dict,
-            mode=config.wandb_mode,
-        )
-
-        # Added
-        if config.save_model:
-            val_indices = val_ds.indices  # e.g. from random_split
-            np.save("val_indices.npy", val_indices)
-            dataset_art = wandb.Artifact(
-                name=f"{config.name}-val-dataset",     
-                type="dataset",
-                description="Indices for validation split"
-            )
-            dataset_art.add_file("val_indices.npy")
-            wandb.log_artifact(dataset_art)
-            print("Validation data saved")
-
         train_dl, val_dl = get_train_val_dl(train_ds, val_ds, config)
+        # train_dl, val_dl = get_train_val_dl(dataset, config)
         train_and_validate_model(train_dl, val_dl, config)
 
 
