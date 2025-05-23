@@ -362,26 +362,6 @@ def get_train_val_dl(train_ds, val_ds, config):
     
 
 def train_and_validate_model(train_dl, val_dl, config):
-    config_dict = OmegaConf.to_container(config, resolve=True)
-    wandb.init(
-        project=config.project,
-        name=config.name,
-        config=config_dict,
-        mode=config.wandb_mode,
-    )
-
-    # Added
-    if config.save_model:
-        val_indices = val_ds.indices  # e.g. from random_split
-        np.save("val_indices.npy", val_indices)
-        dataset_art = wandb.Artifact(
-            name=f"{config.name}-val-dataset",     
-            type="dataset",
-            description="Indices for validation split"
-        )
-        dataset_art.add_file("val_indices.npy")
-        wandb.log_artifact(dataset_art)
-        print("Validation data saved")
 
     model = ResNetUNet(n_classes=3).to(config.device)
 
@@ -599,8 +579,29 @@ def main(config):
         # dataset = configure_dataset(config)
         # visualize_dataset_grid(dataset, num_samples=8)
         train_ds, val_ds = configure_dataset(config)
+
+        config_dict = OmegaConf.to_container(config, resolve=True)
+        wandb.init(
+            project=config.project,
+            name=config.name,
+            config=config_dict,
+            mode=config.wandb_mode,
+        )
+
+        # Added
+        if config.save_model:
+            val_indices = val_ds.indices  # e.g. from random_split
+            np.save("val_indices.npy", val_indices)
+            dataset_art = wandb.Artifact(
+                name=f"{config.name}-val-dataset",     
+                type="dataset",
+                description="Indices for validation split"
+            )
+            dataset_art.add_file("val_indices.npy")
+            wandb.log_artifact(dataset_art)
+            print("Validation data saved")
+
         train_dl, val_dl = get_train_val_dl(train_ds, val_ds, config)
-        # train_dl, val_dl = get_train_val_dl(dataset, config)
         train_and_validate_model(train_dl, val_dl, config)
 
 
