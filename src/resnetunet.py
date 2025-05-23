@@ -264,7 +264,7 @@ def get_train_transforms(image_size):
             A.ElasticTransform(alpha=1, sigma=50, alpha_affine=50, p=0.3),
             # normalize with ImageNet stats (in-place across all channels)
             A.Normalize(mean=(0.485,0.456,0.406), std =(0.229,0.224,0.225)),
-            ToTensorV2(),  # <— converts to torch.Tensor, permutes axes, scales
+            ToTensorV2(),
         ])
 
 def get_val_transforms(image_size):
@@ -325,7 +325,10 @@ def configure_dataset(config):
                      download=True)
 
     print(f"len trainval {len(base)}")
-    train_ds = PetSegDataset(base, transform=get_train_transforms(config.image_size), ignore_index=2)
+    if config.add_augmentation:
+        train_ds = PetSegDataset(base, transform=get_train_transforms(config.image_size), ignore_index=2)
+    else:
+        train_ds = PetSegDataset(base, transform=get_val_transforms(config.image_size), ignore_index=2)
     val_ds   = PetSegDataset(base, transform=get_val_transforms(config.image_size),   ignore_index=2)
     train_idxs, val_idxs = make_split_indices(len(base), split=config.p_train_len, seed=config.seed)
     train_ds = Subset(train_ds, train_idxs)

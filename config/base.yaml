@@ -22,3 +22,5 @@ weight_decay: 1e-5
 t0: 10
 tmult: 2
 eta_min: 1e-6
+
+add_augmentation: True
