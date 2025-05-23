@@ -80,13 +80,17 @@ class UpBlock(nn.Module):
             return x
         x = self.up(x)
 
-        diffY = skip.size(2) - x.size(2)
-        diffX = skip.size(3) - x.size(3)
-        pad_left = diffX//2
-        pad_right = diffX - diffX//2
-        pad_top = diffY//2
-        pad_bottom = diffY - diffY//2
-        x = F.pad(x, [pad_left, pad_right, pad_top, pad_bottom])
+        diffY = skip.size(2) - x.size(2) # Height
+        diffX = skip.size(3) - x.size(3) # Width
+        if diffY != 0 or diffX != 0:
+            print("Difference in height or width")
+            print(f"x.shape {x.shape}")
+            print(f"skip.shape {skip.shape}")
+            pad_left = diffX//2
+            pad_right = diffX - diffX//2
+            pad_top = diffY//2
+            pad_bottom = diffY - diffY//2
+            x = F.pad(x, [pad_left, pad_right, pad_top, pad_bottom])
 
         x = torch.cat([skip, x], dim=1)
         return self.conv(x)
@@ -590,7 +594,7 @@ def load_config(env="local"):
     return config
 
 if __name__ == "__main__":
-    env = os.environ.get("ENV", "local")  # default to 'local'
+    env = os.environ.get("ENV", "local")
     config = load_config(env)
 
     print(f"Running in {env} environment")
@@ -598,6 +602,5 @@ if __name__ == "__main__":
 
     model = models.resnet34(pretrained=True)
     summary(model, input_size=(1, 3, 224, 224))
-    exit()
 
     main(config)
