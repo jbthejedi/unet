@@ -328,6 +328,7 @@ def configure_dataset(config):
     if config.add_augmentation:
         train_ds = PetSegDataset(base, transform=get_train_transforms(config.image_size), ignore_index=2)
     else:
+        print(f"No Augmentation!!")
         train_ds = PetSegDataset(base, transform=get_val_transforms(config.image_size), ignore_index=2)
     val_ds   = PetSegDataset(base, transform=get_val_transforms(config.image_size),   ignore_index=2)
     train_idxs, val_idxs = make_split_indices(len(base), split=config.p_train_len, seed=config.seed)
