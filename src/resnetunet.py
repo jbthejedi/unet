@@ -262,16 +262,13 @@ def get_alb_transforms(image_size):
             A.HorizontalFlip(p=0.5),
             A.Rotate(limit=30, p=0.5),
             A.RandomResizedCrop(size=(image_size, image_size), scale=(0.7,1.0), ratio=(0.75,1.33), p=0.5),
-            A.ColorJitter(brightness=0.4, contrast=0.4,
-                        saturation=0.4, hue=0.1, p=0.5),
+            A.ColorJitter(brightness=0.4, contrast=0.4, saturation=0.4, hue=0.1, p=0.5),
             A.ToGray(p=0.1),
             A.GaussianBlur(blur_limit=3, p=0.3),
             # optional elastic:
-            A.ElasticTransform(alpha=1, sigma=50,
-                            alpha_affine=50, p=0.3),
+            A.ElasticTransform(alpha=1, sigma=50, alpha_affine=50, p=0.3),
             # normalize with ImageNet stats (in-place across all channels)
-            A.Normalize(mean=(0.485,0.456,0.406),
-                        std =(0.229,0.224,0.225)),
+            A.Normalize(mean=(0.485,0.456,0.406), std =(0.229,0.224,0.225)),
             ToTensorV2(),  # <— converts to torch.Tensor, permutes axes, scales
         ])
 
@@ -398,6 +395,7 @@ def train_and_validate_model(train_dl, val_dl, config):
     #     eta_min=1e-6
     # )
 
+    best_val_dice = 0.0
     for epoch in range(1, config.n_epochs+1):
         tqdm.write(f"Epoch {epoch}/{config.n_epochs+1}")
 
@@ -422,7 +420,6 @@ def train_and_validate_model(train_dl, val_dl, config):
             for p in enc: p.requires_grad = True
 
         model.train()
-        best_val_dice = 0.0
         with tqdm(train_dl, desc="Training") as pbar:
             train_loss = 0.0
             train_correct = 0.0
@@ -509,9 +506,11 @@ def train_and_validate_model(train_dl, val_dl, config):
             "train/loss": train_epoch_loss,
             "train/acc": train_epoch_acc,
             "train/dice": train_epoch_dice,
+            "train/iou": train_epoch_iou,
             "val/loss": val_epoch_loss,
             "val/acc": val_epoch_acc,
             "val/dice": val_epoch_dice,
+            "val/iou": val_epoch_iou,
             "lr": scheduler.get_last_lr()[0],
         })
         scheduler.step()

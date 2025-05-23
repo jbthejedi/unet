@@ -1,4 +1,4 @@
-name: unet-server-resnet
+name: unet-server-resnet-save-model
 
 batch_size: 32
 image_size: 224

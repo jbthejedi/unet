@@ -43,3 +43,9 @@ using install_mc.sh
 
 # Create env
 conda create -n unet python=3.10 && conda activate unet && pip install -r requirements.txt
+
+# Login to wandb
+wandb login
+
+# When restarting runpod
+apt update && apt install vim -y && apt install screen -y && /workspace/miniconda3/bin/conda init && source ~/.bashrc && conda activate unet && wandb login
