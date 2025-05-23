@@ -13,9 +13,9 @@ wandb_mode: disabled
 visualize_predictions: False
 num_workers: 4
 
-test_model: False
-train_model: True
-artifact_name: jbarry-team/unet-oxford-pet/unet-server-resnet-save-model-1_best_model:latest
+test_model: True
+train_model: False
+artifact_name: jbarry-team/unet-oxford-pet/resnetunet-save-new-train-val-laoder_best_model:latest
 save_model: False
 
 # Unfreeze encoder parameters

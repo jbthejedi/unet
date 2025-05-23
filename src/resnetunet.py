@@ -3,7 +3,8 @@ from PIL import Image
 from pprint import pprint
 import os
 import yaml
-# import hydra
+from torchinfo import summary
+import torchvision.models as models
 import random
 import torch
 
@@ -203,7 +204,6 @@ def visualize_predictions(model, dataloader, device, num_batches=5):
     model.eval()
     with torch.no_grad():
         for i, (xb, yb) in enumerate(dataloader):
-            print(f"iteration {i}")
             xb = xb.to(device)
             yb = yb.squeeze(1).cpu().numpy()    # [B, H, W]
             logits = model(xb)                  # [B, C, H, W]
@@ -211,7 +211,6 @@ def visualize_predictions(model, dataloader, device, num_batches=5):
 
             batch_size = xb.size(0)
             for j in range(batch_size):
-                print(f"j {j}")
                 img = TF.to_pil_image(xb[j].cpu())
                 gt_mask = yb[j]
                 pred_mask = preds[j]
@@ -241,11 +240,7 @@ def visualize_predictions(model, dataloader, device, num_batches=5):
                 plt.show()
 
             if i + 1 >= num_batches:
-                print(f"i + 1 {i + 1}")
-                print(f"numbatches {num_batches}")
-                print("breaking")
                 break
-        print("end")
 
 IMAGENET_MEAN = (0.485, 0.456, 0.406)
 IMAGENET_STD  = (0.229, 0.224, 0.225)
@@ -253,7 +248,6 @@ IMAGENET_STD  = (0.229, 0.224, 0.225)
 # 1) build your Albumentations pipeline
 def get_train_transforms(image_size):
     normalize = A.Normalize(mean=IMAGENET_MEAN, std =IMAGENET_STD)
-
     return A.Compose([
             A.Resize(image_size, image_size),
             A.HorizontalFlip(p=0.5),
@@ -277,18 +271,18 @@ def get_val_transforms(image_size):
         ToTensorV2(),
     ])
 
+def get_test_transforms(image_size):
+    return A.Compose([
+        A.Resize(image_size, image_size),
+        A.Normalize(mean=(0,0,0), std=(1,1,1)),
+        ToTensorV2(),
+    ])
+
 
 # Added
 class PetSegDataset(Dataset):
     def __init__(self, base, transform, ignore_index):
         super().__init__()
-        # use torchvision’s split argument instead of internal indices
-        # self.base = OxfordIIITPet(
-        #     root=root,
-        #     split=split,                    # 'trainval' or 'test'
-        #     target_types='segmentation',
-        #     download=True
-        # )
         self.base = base
         self.transform = transform
         self.ignore_index = ignore_index
@@ -326,6 +320,7 @@ def configure_dataset(config):
                      target_types="segmentation",
                      download=True)
 
+    print(f"len trainval {len(base)}")
     train_ds = PetSegDataset(base, transform=get_train_transforms(config.image_size), ignore_index=2)
     val_ds   = PetSegDataset(base, transform=get_val_transforms(config.image_size),   ignore_index=2)
     train_idxs, val_idxs = make_split_indices(len(base), split=config.p_train_len, seed=config.seed)
@@ -344,13 +339,8 @@ def configure_dataset(config):
                      split="test",
                      target_types="segmentation",
                      download=True)
-    # test_ds = PetSegDataset(
-    #     root=config.data_root,
-    #     split='test',
-    #     transform=get_val_transforms(config.image_size),
-    #     ignore_index=2
-    # )
-    test_ds = PetSegDataset(base, transform=get_val_transforms(config.image_size), ignore_index=2)
+    print(f"len test dataset size {len(base)}")
+    test_ds = PetSegDataset(base, transform=get_test_transforms(config.image_size), ignore_index=2)
     return train_ds, val_ds, test_ds
     
 
@@ -381,18 +371,6 @@ def train_and_validate_model(train_dl, val_dl, config):
         mode=config.wandb_mode,
     )
 
-    # Added
-    # if config.save_model:
-    #     val_indices = val_ds.indices  # e.g. from random_split
-    #     np.save("val_indices.npy", val_indices)
-    #     dataset_art = wandb.Artifact(
-    #         name=f"{config.name}-val-dataset",     
-    #         type="dataset",
-    #         description="Indices for validation split"
-    #     )
-    #     dataset_art.add_file("val_indices.npy")
-    #     wandb.log_artifact(dataset_art)
-
     model = ResNetUNet(n_classes=3).to(config.device)
 
     # Added
@@ -421,7 +399,6 @@ def train_and_validate_model(train_dl, val_dl, config):
         {"params": enc, "lr": config.enc_lr}, # Encoder LRs
         {"params": dec, "lr": config.dec_lr}, # Decoder LRs
     ], weight_decay=1e-5)
-    # optimizer = torch.optim.Adam(model.parameters(), lr=config.lr, weight_decay=config.weight_decay)
 
     # Added
     # Cosine scheduler that runs in periods
@@ -433,12 +410,6 @@ def train_and_validate_model(train_dl, val_dl, config):
         T_mult=config.tmult,
         eta_min=config.eta_min,
     )
-
-    # scheduler = CosineAnnealingLR(
-    #     optimizer,
-    #     T_max=config.n_epochs,
-    #     eta_min=1e-6
-    # )
 
     best_val_dice = 0.0
     for epoch in range(1, config.n_epochs+1):
@@ -561,7 +532,7 @@ def train_and_validate_model(train_dl, val_dl, config):
         scheduler.step()
         tqdm.write(f"Lr {scheduler.get_last_lr()[0]:.2e}")
     wandb.finish()
-    if cfg.get("visualize_predictions"):
+    if config.get("visualize_predictions"):
         visualize_predictions(model, val_dl, config.device, num_batches=1)
 
 
@@ -573,14 +544,14 @@ def load_and_test_model(config):
         artifact_dir = artifact.download()
 
         # Load model
-        model = ResNetUNet(n_classes=3)
+        model = ResNetUNet(n_classes=3).to(config.device)
         model.load_state_dict(torch.load(f"{artifact_dir}/best_model.pth", map_location="cpu"))
         model.eval()
         print("Model loaded successfully.")
 
         _, _, val_ds = configure_dataset(config)
         val_dl  = DataLoader(val_ds, batch_size=config.batch_size)
-        model = ResNetUNet(n_classes=3).to(config.device)
+        # model = ResNetUNet(n_classes=3).to(config.device)
         visualize_predictions(model, val_dl, config.device, num_batches=10)
     except wandb.CommError as e:
         print(f"Artifact not found: {artifact_name}")
@@ -620,17 +591,12 @@ def load_config(env="local"):
 
 if __name__ == "__main__":
     env = os.environ.get("ENV", "local")  # default to 'local'
-    cfg = load_config(env)
+    config = load_config(env)
 
     print(f"Running in {env} environment")
-    cfg_dict = OmegaConf.to_container(cfg, resolve=True)
-    pprint(cfg_dict)
-    print(type(cfg))
+    pprint(OmegaConf.to_container(config, resolve=True))
 
-    # from torchinfo import summary       # or torchsummary
-    # import torchvision.models as models
+    model = models.resnet34(pretrained=True)
+    summary(model, input_size=(1, 3, 224, 224))
 
-    # model = models.resnet34(pretrained=True)
-    # summary(model, input_size=(1, 3, 224, 224))
-
-    main(cfg)
+    main(config)
