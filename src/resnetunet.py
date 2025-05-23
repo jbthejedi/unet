@@ -598,5 +598,6 @@ if __name__ == "__main__":
 
     model = models.resnet34(pretrained=True)
     summary(model, input_size=(1, 3, 224, 224))
+    exit()
 
     main(config)
