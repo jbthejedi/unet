@@ -585,9 +585,8 @@ def main(config):
     elif config.train_model:
         # dataset = configure_dataset(config)
         # visualize_dataset_grid(dataset, num_samples=8)
-        train_ds, val_ds = configure_dataset(config)
-        train_dl, val_dl = get_train_val_dl(train_ds, val_ds, config)
-        # train_dl, val_dl = get_train_val_dl(dataset, config)
+        trainval_ds, _ = configure_dataset(config)
+        train_dl, val_dl = get_train_val_dl(trainval_ds, config)
         train_and_validate_model(train_dl, val_dl, config)
 
 

@@ -7,14 +7,14 @@ device: cpu
 data_root: /Users/justinbarry/projects/unet/data/
 
 test_run: True
-sample_size: 1000
+sample_size: 40
 wandb_mode: disabled
 
 visualize_predictions: False
 num_workers: 4
 
-test_model: True
-train_model: False
+test_model: False
+train_model: True
 artifact_name: jbarry-team/unet-oxford-pet/unet-server-resnet-save-model-1_best_model:latest
 save_model: False
 
