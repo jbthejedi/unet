@@ -1,4 +1,5 @@
 import wandb
+from PIL import Image
 from pprint import pprint
 import os
 import yaml
@@ -14,15 +15,15 @@ import torch.nn as nn
 import matplotlib.pyplot as plt
 import torchvision.transforms.functional as TF
 
-# import albumentations as A
-# from albumentations.pytorch import ToTensorV2
+import albumentations as A
+from albumentations.pytorch import ToTensorV2
 
 from torch.optim.lr_scheduler import CosineAnnealingLR, CosineAnnealingWarmRestarts
 from tqdm import tqdm
 from omegaconf import OmegaConf
 from dataclasses import dataclass
 from torchvision.datasets import OxfordIIITPet
-from torch.utils.data import DataLoader, Subset, random_split
+from torch.utils.data import DataLoader, Subset, random_split, Dataset
 from omegaconf import DictConfig
 
 
@@ -42,7 +43,6 @@ class DoubleConv(nn.Module):
             nn.ReLU(inplace=True),
         ]
         if p_dropout:
-            print("has dropout")
             layers.append(nn.Dropout(p=p_dropout))
         self.double_conv = nn.Sequential(*layers)
 
@@ -63,13 +63,13 @@ class DoubleConv(nn.Module):
 class UpBlock(nn.Module):
 
     """Upsample → DoubleConv, with optional skip-concat"""
-    def __init__(self, in_ch, out_ch):
+    def __init__(self, in_ch, out_ch, p_dropout=None):
         super().__init__()
         self.up = nn.ConvTranspose2d(in_ch, in_ch // 2, kernel_size=2, stride=2) # Double H,W dims
-        self.conv = DoubleConv(in_ch, out_ch)
+        self.conv = DoubleConv(in_ch, out_ch, p_dropout=p_dropout)
 
         self.up_special = nn.ConvTranspose2d(in_ch, in_ch, kernel_size=2, stride=2) # Double H,W dims
-        self.conv_special = DoubleConv(in_ch * 2, in_ch)
+        self.conv_special = DoubleConv(in_ch * 2, in_ch, p_dropout=p_dropout)
 
     def forward(self, x, skip: torch.Tensor = None):
         if x.size(1) == skip.size(1):
@@ -108,10 +108,10 @@ class ResNetUNet(nn.Module):
         self.layer4 = base_model.layer4    # 512 →  7×7
 
         # 2) Decoder: upsample + double-convs
-        self.up4 = UpBlock(512, 256)  # input is layer4 out
-        self.up3 = UpBlock(256, 128)
-        self.up2 = UpBlock(128,  64)
-        self.up1 = UpBlock(64,   64)
+        self.up4 = UpBlock(512, 256, p_dropout=.2)  # input is layer4 out
+        self.up3 = UpBlock(256, 128, p_dropout=.1)
+        self.up2 = UpBlock(128,  64, p_dropout=.1)
+        self.up1 = UpBlock(64,   64, p_dropout=.1)
         # self.up0 = UpBlock(64,   32)
         self.up0 = nn.ConvTranspose2d(64, 32, kernel_size=2, stride=2)
 
@@ -252,54 +252,72 @@ def adjust_target_mask(x):
     return x.long().squeeze(0) - 1
 
 
+# 1) build your Albumentations pipeline
+def get_alb_transforms(image_size):
+    normalize = A.Normalize(mean=(0.485,0.456,0.406),
+                            std =(0.229,0.224,0.225))
+
+    return A.Compose([
+            A.Resize(image_size, image_size),
+            A.HorizontalFlip(p=0.5),
+            A.Rotate(limit=30, p=0.5),
+            A.RandomResizedCrop(size=(image_size, image_size), scale=(0.7,1.0), ratio=(0.75,1.33), p=0.5),
+            A.ColorJitter(brightness=0.4, contrast=0.4,
+                        saturation=0.4, hue=0.1, p=0.5),
+            A.ToGray(p=0.1),
+            A.GaussianBlur(blur_limit=3, p=0.3),
+            # optional elastic:
+            A.ElasticTransform(alpha=1, sigma=50,
+                            alpha_affine=50, p=0.3),
+            # normalize with ImageNet stats (in-place across all channels)
+            A.Normalize(mean=(0.485,0.456,0.406),
+                        std =(0.229,0.224,0.225)),
+            ToTensorV2(),  # <— converts to torch.Tensor, permutes axes, scales
+        ])
+
+
+# Added
+class PetSegDataset(Dataset):
+    def __init__(self, root, split, image_size, ignore_index):
+        super().__init__()
+        # use torchvision’s split argument instead of internal indices
+        self.base = OxfordIIITPet(
+            root=root,
+            split=split,                    # 'trainval' or 'test'
+            target_types='segmentation',
+            download=True
+        )
+        self.transform = get_alb_transforms(image_size)
+        self.ignore_index = ignore_index
+
+    def __len__(self):
+        return len(self.base)
+
+    def __getitem__(self, i):
+        img_pil, mask_pil = self.base[i]
+        img  = np.array(img_pil)
+        mask = np.array(mask_pil)
+
+        aug    = self.transform(image=img, mask=mask)
+        img_t  = aug["image"]
+        mask_t = aug["mask"].long()
+
+        # Fix for negative labels:
+        mask_t[mask_t == 0] = self.ignore_index  
+        mask_t = mask_t - 1
+
+        return img_t, mask_t
+
+
 def configure_dataset(config):
-    """
-    Geometric (flip/rotate/scale/shear) → helps the network generalize to different poses & framing.
-    Photometric (brightness/contrast/hue/blur) → helps the network be robust to lighting & camera variation.
-    """
-    # Added
-    normalize = T.Normalize(mean=[0.485,0.456,0.406], std =[0.229,0.224,0.225])
-    if config.device == 'cuda':
-        transform = T.Compose([
-            T.Resize((config.image_size, config.image_size)),
-            T.RandomHorizontalFlip(),
-            T.RandomRotation(degrees=15),
-            T.ColorJitter(brightness=0.3, contrast=0.3, saturation=0.3, hue=0.1),
-            T.RandomGrayscale(p=0.1),
-            T.GaussianBlur(kernel_size=3),
-            T.ToTensor(),
-            normalize,
-        ])
-        # transform = T.Compose([
-        #     T.Resize((config.image_size, config.image_size)),
-        #     T.RandomHorizontalFlip(),
-        #     T.ColorJitter(),
-        #     T.RandomResizedCrop(config.image_size, scale=(0.8, 1.0)),
-        #     T.ToTensor(),
-        #     ToTensorV2(),
-        # ])
-    else:
-        transform = T.Compose([
-            T.Resize((config.image_size, config.image_size)),
-            T.ToTensor(),
-            normalize,
-        ])
-
-    target_transform = T.Compose([
-        T.Resize((config.image_size, config.image_size)),
-        T.PILToTensor(),
-        T.Lambda(adjust_target_mask)
-    ])
-
-    dataset = OxfordIIITPet(
+    return PetSegDataset(
         root=config.data_root,
-        download=True,
-        target_types='segmentation',
-        transform=transform,
-        target_transform=target_transform
-    )
-    return dataset
+        split='trainval',    # or however you split
+        image_size=config.image_size,
+        ignore_index=2,
+        )
     
+
 def get_train_val_dl(dataset, config):
     if config.test_run:
         indices = random.sample(range(len(dataset)), config.sample_size)
