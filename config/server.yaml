@@ -14,7 +14,7 @@ num_workers: 15
 
 test_model: False
 train_model: True
-save_model: False
+save_model: True
 
 # Unfreeze encoder parameters
 unfreeze_stage0: 6

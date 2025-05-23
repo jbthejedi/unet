@@ -381,6 +381,7 @@ def train_and_validate_model(train_dl, val_dl, config):
         )
         dataset_art.add_file("val_indices.npy")
         wandb.log_artifact(dataset_art)
+        print("Validation data saved")
 
     model = ResNetUNet(n_classes=3).to(config.device)
 
@@ -554,7 +555,35 @@ def train_and_validate_model(train_dl, val_dl, config):
         visualize_predictions(model, val_dl, config.device, num_batches=1)
 
 
+def load_and_test_model(config):
+    api = wandb.Api()
+    artifact_name = config.artifact_name
+    try:
+        artifact = api.artifact(artifact_name, type='model')
+        artifact_dir = artifact.download()
 
+        # Load model
+        model = ResNetUNet(n_classes=3)
+        model.load_state_dict(torch.load(f"{artifact_dir}/best_model.pth", map_location="cpu"))
+        model.eval()
+        print("Model loaded successfully.")
+
+        val_indices = np.load(f"{artifact_dir}/val_indices.npy", allow_pickle=True).tolist()
+        full_ds = PetSegDataset(
+            root=config.data_root, split="trainval",
+            transform=get_display_transforms(config.image_size),
+            ignore_index=2
+        )
+        val_ds  = Subset(full_ds, val_indices)
+        val_dl  = DataLoader(val_ds, batch_size=config.batch_size)
+
+        model = ResNetUNet(n_classes=3).to(config.device)
+
+        visualize_predictions(model, val_dl, config.device, num_batches=10)
+    except wandb.CommError as e:
+        print(f"Artifact not found: {artifact_name}")
+        print(f"Error: {e}")
+        exit(0)
 
 def main(config):
     torch.manual_seed(config.seed)
@@ -565,34 +594,7 @@ def main(config):
     print(f"Running on {device}")
 
     if config.test_model:
-        api = wandb.Api()
-        artifact_name = config.artifact_name
-        try:
-            artifact = api.artifact(artifact_name, type='model')
-            artifact_dir = artifact.download()
-
-            # Load model
-            model = ResNetUNet(n_classes=3)
-            model.load_state_dict(torch.load(f"{artifact_dir}/best_model.pth", map_location="cpu"))
-            model.eval()
-            print("Model loaded successfully.")
-
-            val_indices = np.load(f"{artifact_dir}/val_indices.npy", allow_pickle=True).tolist()
-            full_ds = PetSegDataset(
-                root=config.data_root, split="trainval",
-                transform=get_display_transforms(config.image_size),
-                ignore_index=2
-            )
-            val_ds  = Subset(full_ds, val_indices)
-            val_dl  = DataLoader(val_ds, batch_size=config.batch_size)
-
-            model = ResNetUNet(n_classes=3).to(config.device)
-
-            visualize_predictions(model, val_dl, config.device, num_batches=10)
-        except wandb.CommError as e:
-            print(f"Artifact not found: {artifact_name}")
-            print(f"Error: {e}")
-            exit(0)
+        load_and_test_model(config)
     elif config.train_model:
         # dataset = configure_dataset(config)
         # visualize_dataset_grid(dataset, num_samples=8)
