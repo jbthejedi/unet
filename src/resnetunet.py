@@ -247,15 +247,12 @@ def visualize_predictions(model, dataloader, device, num_batches=5):
                 break
         print("end")
 
-
-def adjust_target_mask(x):
-    return x.long().squeeze(0) - 1
-
+IMAGENET_MEAN = (0.485, 0.456, 0.406)
+IMAGENET_STD  = (0.229, 0.224, 0.225)
 
 # 1) build your Albumentations pipeline
-def get_alb_transforms(image_size):
-    normalize = A.Normalize(mean=(0.485,0.456,0.406),
-                            std =(0.229,0.224,0.225))
+def get_train_transforms(image_size):
+    normalize = A.Normalize(mean=IMAGENET_MEAN, std =IMAGENET_STD)
 
     return A.Compose([
             A.Resize(image_size, image_size),
@@ -272,10 +269,23 @@ def get_alb_transforms(image_size):
             ToTensorV2(),  # <— converts to torch.Tensor, permutes axes, scales
         ])
 
+def get_val_transforms(image_size):
+    normalize = A.Normalize(mean=IMAGENET_MEAN, std =IMAGENET_STD)
+    return A.Compose([
+        A.Resize(image_size, image_size),
+        normalize,
+        ToTensorV2(),
+    ])
+
+def get_display_transforms(image_size):
+    return A.Compose([
+      A.Resize(image_size, image_size),
+      ToTensorV2(),    # no Normalize
+    ])
 
 # Added
 class PetSegDataset(Dataset):
-    def __init__(self, root, split, image_size, ignore_index):
+    def __init__(self, root, split, transform, ignore_index):
         super().__init__()
         # use torchvision’s split argument instead of internal indices
         self.base = OxfordIIITPet(
@@ -284,7 +294,7 @@ class PetSegDataset(Dataset):
             target_types='segmentation',
             download=True
         )
-        self.transform = get_alb_transforms(image_size)
+        self.transform = transform
         self.ignore_index = ignore_index
 
     def __len__(self):
@@ -307,21 +317,33 @@ class PetSegDataset(Dataset):
 
 
 def configure_dataset(config):
-    return PetSegDataset(
+    train_ds = PetSegDataset(
         root=config.data_root,
-        split='trainval',    # or however you split
-        image_size=config.image_size,
-        ignore_index=2,
-        )
+        split='trainval',
+        transform=get_train_transforms(config.image_size),
+        ignore_index=2
+    )
+    val_ds  = PetSegDataset(
+        root=config.data_root,
+        split='test',
+        transform=get_val_transforms(config.image_size),
+        ignore_index=2
+    )
+    return train_ds, val_ds
     
 
-def get_train_val_dl(dataset, config):
+def get_train_val_dl(train_ds, val_ds, config):
+    # if config.test_run:
+    #     indices = random.sample(range(len(dataset)), config.sample_size)
+    #     dataset = Subset(dataset, indices)
     if config.test_run:
-        indices = random.sample(range(len(dataset)), config.sample_size)
-        dataset = Subset(dataset, indices)
+        idxs = random.sample(range(len(train_ds)), config.sample_size)
+        train_ds = Subset(train_ds, idxs)
+        idxs = random.sample(range(len(val_ds)),   config.sample_size)
+        val_ds   = Subset(val_ds,   idxs)
 
-    train_len = int(0.9 * len(dataset))
-    train_ds, val_ds = random_split(dataset, [train_len, len(dataset) - train_len])
+    # train_len = int(0.9 * len(dataset))
+    # train_ds, val_ds = random_split(dataset, [train_len, len(dataset) - train_len])
     train_dl = DataLoader(
         train_ds,
         batch_size=config.batch_size,
@@ -347,6 +369,18 @@ def train_and_validate_model(train_dl, val_dl, config):
         config=config_dict,
         mode=config.wandb_mode,
     )
+
+    # Added
+    if config.save_model:
+        val_indices = val_ds.indices  # e.g. from random_split
+        np.save("val_indices.npy", val_indices)
+        dataset_art = wandb.Artifact(
+            name=f"{config.name}-val-dataset",     
+            type="dataset",
+            description="Indices for validation split"
+        )
+        dataset_art.add_file("val_indices.npy")
+        wandb.log_artifact(dataset_art)
 
     model = ResNetUNet(n_classes=3).to(config.device)
 
@@ -520,25 +554,6 @@ def train_and_validate_model(train_dl, val_dl, config):
         visualize_predictions(model, val_dl, config.device, num_batches=1)
 
 
-def load_and_test_model(config, val_dl):
-    # Setup W&B API
-    # Replace with your actual project, run, and artifact names
-    api = wandb.Api()
-    artifact_name = config.artifact_name
-    try:
-        artifact = api.artifact(artifact_name, type='model')
-        artifact_dir = artifact.download()
-
-        # Load model
-        model = ResNetUNet(n_classes=3)
-        model.load_state_dict(torch.load(f"{artifact_dir}/best_model.pth", map_location="cpu"))
-        model.eval()
-        print("Model loaded successfully.")
-    except wandb.CommError as e:
-        model = ResNetUNet(n_classes=3).to(config.device)
-        print(f"Artifact not found: {artifact_name}")
-        print(f"Error: {e}")
-    visualize_predictions(model, val_dl, config.device, num_batches=10)
 
 
 def main(config):
@@ -549,13 +564,41 @@ def main(config):
     device = torch.device(config.device if torch.cuda.is_available() else "cpu")
     print(f"Running on {device}")
 
-    dataset = configure_dataset(config)
-    # visualize_dataset_grid(dataset, num_samples=8)
-    train_dl, val_dl = get_train_val_dl(dataset, config)
-
     if config.test_model:
-        load_and_test_model(config, val_dl)
+        api = wandb.Api()
+        artifact_name = config.artifact_name
+        try:
+            artifact = api.artifact(artifact_name, type='model')
+            artifact_dir = artifact.download()
+
+            # Load model
+            model = ResNetUNet(n_classes=3)
+            model.load_state_dict(torch.load(f"{artifact_dir}/best_model.pth", map_location="cpu"))
+            model.eval()
+            print("Model loaded successfully.")
+
+            val_indices = np.load(f"{artifact_dir}/val_indices.npy", allow_pickle=True).tolist()
+            full_ds = PetSegDataset(
+                root=config.data_root, split="trainval",
+                transform=get_display_transforms(config.image_size),
+                ignore_index=2
+            )
+            val_ds  = Subset(full_ds, val_indices)
+            val_dl  = DataLoader(val_ds, batch_size=config.batch_size)
+
+            model = ResNetUNet(n_classes=3).to(config.device)
+
+            visualize_predictions(model, val_dl, config.device, num_batches=10)
+        except wandb.CommError as e:
+            print(f"Artifact not found: {artifact_name}")
+            print(f"Error: {e}")
+            exit(0)
     elif config.train_model:
+        # dataset = configure_dataset(config)
+        # visualize_dataset_grid(dataset, num_samples=8)
+        train_ds, val_ds = configure_dataset(config)
+        train_dl, val_dl = get_train_val_dl(train_ds, val_ds, config)
+        # train_dl, val_dl = get_train_val_dl(dataset, config)
         train_and_validate_model(train_dl, val_dl, config)
 
 
