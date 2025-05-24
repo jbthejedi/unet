@@ -371,6 +371,7 @@ def get_train_val_dl(train_ds, val_ds, config):
 
 
 def train_and_validate_model_standard(train_dl, val_dl, config):
+    print("Train Standard")
     config_dict = OmegaConf.to_container(config, resolve=True)
     wandb.init(
         project=config.project,
@@ -390,22 +391,6 @@ def train_and_validate_model_standard(train_dl, val_dl, config):
     best_val_dice = 0.0
     for epoch in range(1, config.n_epochs+1):
         tqdm.write(f"Epoch {epoch}/{config.n_epochs+1}")
-
-        # Added
-        # Warm-up first 2 epochs
-        if epoch <= 2:
-            for pg in optimizer.param_groups:
-                pg["lr"] = pg["lr"] * (epoch / 2)
-                print(f"Warm starting with lr {pg['lr']}")
-
-        # Added
-        # ——— Unfreeze logic ———
-        if epoch == config.unfreeze_stage0:
-            tqdm.write("Unfreezing layers 3 & 4")
-            # unfreeze last two stages
-            for p in model.layer3.parameters(): p.requires_grad = True
-            for p in model.layer4.parameters(): p.requires_grad = True
-
 
         model.train()
         with tqdm(train_dl, desc="Training") as pbar:
@@ -507,6 +492,7 @@ def train_and_validate_model_standard(train_dl, val_dl, config):
     
 
 def train_and_validate_model_enhanced(train_dl, val_dl, config):
+    print("Train Enhanced")
     config_dict = OmegaConf.to_container(config, resolve=True)
     wandb.init(
         project=config.project,
