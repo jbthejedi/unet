@@ -15,8 +15,10 @@ num_workers: 4
 
 test_model: False
 train_model: True
-artifact_name: jbarry-team/unet-oxford-pet/resnetunet-save-new-train-val-laoder_best_model:latest
 save_model: False
+
+artifact_name: jbarry-team/unet-oxford-pet/resnetunet-no-augmentation_best_model:latest
+# artifact_name: jbarry-team/unet-oxford-pet/resnetunet-save-new-train-val-laoder_best_model:latest
 
 # Unfreeze encoder parameters
 unfreeze_stage0: 3

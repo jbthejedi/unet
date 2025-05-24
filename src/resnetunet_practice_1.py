@@ -63,84 +63,13 @@ class DoubleConv(nn.Module):
 # layer4               [1, 512,   7,   7]   ...
 class UpBlock(nn.Module):
 
-    """Upsample → DoubleConv, with optional skip-concat"""
-    def __init__(self, in_ch, out_ch, p_dropout=None):
-        super().__init__()
-        self.up = nn.ConvTranspose2d(in_ch, in_ch // 2, kernel_size=2, stride=2) # Double H,W dims
-        self.conv = DoubleConv(in_ch, out_ch, p_dropout=p_dropout)
-
-        self.up_special = nn.ConvTranspose2d(in_ch, in_ch, kernel_size=2, stride=2) # Double H,W dims
-        self.conv_special = DoubleConv(in_ch * 2, in_ch, p_dropout=p_dropout)
-
-    def forward(self, x, skip: torch.Tensor = None):
-        if x.size(1) == skip.size(1):
-            x = self.up_special(x) # -> (8, 64, 112, 112)
-            cat = torch.cat([x, skip], dim=1) # -> (8, 128, 112, 112)
-            x = self.conv_special(cat) # -> (8, 64, 112, 112)
-            return x
-        x = self.up(x)
-
-        diffY = skip.size(2) - x.size(2) # Height
-        diffX = skip.size(3) - x.size(3) # Width
-        if diffY != 0 or diffX != 0:
-            print("Difference in height or width")
-            print(f"x.shape {x.shape}")
-            print(f"skip.shape {skip.shape}")
-            pad_left = diffX//2
-            pad_right = diffX - diffX//2
-            pad_top = diffY//2
-            pad_bottom = diffY - diffY//2
-            x = F.pad(x, [pad_left, pad_right, pad_top, pad_bottom])
-
-        x = torch.cat([skip, x], dim=1)
-        return self.conv(x)
 
 class ResNetUNet(nn.Module):
     def __init__(self, n_classes):
-        super().__init__()
-        # 1) Load ResNet-34 & grab layers
-        base_model = models.resnet34(pretrained=True)
-        self.layer0 = nn.Sequential(
-            base_model.conv1,  # 64, /2
-            base_model.bn1,
-            base_model.relu,
-        )
-        self.pool0  = base_model.maxpool   # /2 again → 56×56 from 224
-        
-        self.layer1 = base_model.layer1    # 64, → 56×56
-        self.layer2 = base_model.layer2    # 128 → 28×28
-        self.layer3 = base_model.layer3    # 256 → 14×14
-        self.layer4 = base_model.layer4    # 512 →  7×7
-
-        # 2) Decoder: upsample + double-convs
-        self.up4 = UpBlock(512, 256, p_dropout=.2)  # input is layer4 out
-        self.up3 = UpBlock(256, 128, p_dropout=.1)
-        self.up2 = UpBlock(128,  64, p_dropout=.1)
-        self.up1 = UpBlock(64,   64, p_dropout=.1)
-        # self.up0 = UpBlock(64,   32)
-        self.up0 = nn.ConvTranspose2d(64, 32, kernel_size=2, stride=2)
-
-        # 3) Final 1×1 conv → class logits
-        self.classifier = nn.Conv2d(32, n_classes, kernel_size=1)
+        pass
 
     def forward(self, x):
-        # Encoder
-        x0 = self.layer0(x)    # → (N,64,112,112)
-        x1 = self.pool0(x0)    # → (N,64, 56,56)
-        x2 = self.layer1(x1)   # → (N,64, 56,56)
-        x3 = self.layer2(x2)   # → (N,128,28,28)
-        x4 = self.layer3(x3)   # → (N,256,14,14)
-
-        x5 = self.layer4(x4)   # → (N,512, 7, 7)  ← bottleneck
-
-        # Decoder
-        d4 = self.up4(x5, x4)  # → (N,256,14,14)
-        d3 = self.up3(d4, x3)  # → (N,128,28,28)
-        d2 = self.up2(d3, x2)  # → (N, 64,56,56)
-        d1 = self.up1(d2, x0)  # → (N, 64,112,112)
-        d0 = self.up0(d1)      # → (N, 32,224,224)
-
-        return self.classifier(d0)
+        pass
 
 def dice_score(logits, labels, fg_classes=[0], eps=1e-6):
     """Computes mean Dice score for a batch."""
@@ -286,35 +215,18 @@ def get_test_transforms(image_size):
 # Added
 class PetSegDataset(Dataset):
     def __init__(self, base, transform, ignore_index):
-        super().__init__()
-        self.base = base
-        self.transform = transform
-        self.ignore_index = ignore_index
 
     def __len__(self):
         return len(self.base)
 
     def __getitem__(self, i):
-        img_pil, mask_pil = self.base[i]
-        img  = np.array(img_pil)
-        mask = np.array(mask_pil)
 
-        aug    = self.transform(image=img, mask=mask)
-        img_t  = aug["image"]
-        mask_t = aug["mask"].long()
-
-        # Fix for negative labels:
-        mask_t[mask_t == 0] = self.ignore_index  
-        mask_t = mask_t - 1
-
-        return img_t, mask_t
+        # return img_t, mask_t
+        pass
 
 
 def make_split_indices(n, split=0.9, seed=1337):
-    idxs = list(range(n))
-    random.Random(seed).shuffle(idxs)
-    cut = int(split * n)
-    return idxs[:cut], idxs[cut:]
+    pass
 
 
 def configure_dataset(config):
@@ -368,145 +280,9 @@ def get_train_val_dl(train_ds, val_ds, config):
         pin_memory=True,
     )
     return train_dl, val_dl
-
-
-def train_and_validate_model_standard(train_dl, val_dl, config):
-    config_dict = OmegaConf.to_container(config, resolve=True)
-    wandb.init(
-        project=config.project,
-        name=config.name,
-        config=config_dict,
-        mode=config.wandb_mode,
-    )
-
-    model = ResNetUNet(n_classes=3).to(config.device)
-
-    # label indexes (pets, background, boundary)
-    weights = torch.tensor([1.3, 1.0, 0.0], device=config.device)
-    criterion = nn.CrossEntropyLoss(weight=weights, ignore_index=2)
-    optimizer = torch.optim.AdamW(model.parameters(), lr=config.lr)
-
-
-    best_val_dice = 0.0
-    for epoch in range(1, config.n_epochs+1):
-        tqdm.write(f"Epoch {epoch}/{config.n_epochs+1}")
-
-        # Added
-        # Warm-up first 2 epochs
-        if epoch <= 2:
-            for pg in optimizer.param_groups:
-                pg["lr"] = pg["lr"] * (epoch / 2)
-                print(f"Warm starting with lr {pg['lr']}")
-
-        # Added
-        # ——— Unfreeze logic ———
-        if epoch == config.unfreeze_stage0:
-            tqdm.write("Unfreezing layers 3 & 4")
-            # unfreeze last two stages
-            for p in model.layer3.parameters(): p.requires_grad = True
-            for p in model.layer4.parameters(): p.requires_grad = True
-
-
-        model.train()
-        with tqdm(train_dl, desc="Training") as pbar:
-            train_loss = 0.0
-            train_correct = 0.0
-            total_dice = 0.0
-            total_iou = 0.0
-            train_total_pixels = 0
-            total_samples = 0
-            for xb, yb in pbar:
-                xb, yb = xb.to(config.device), yb.to(config.device)
-                logits = model(xb)
-                loss = criterion(logits, yb)
-                optimizer.zero_grad()
-                loss.backward()
-                optimizer.step()
-
-                _, preds = torch.max(logits, 1)
-
-                train_loss += loss.item() * yb.numel()
-                train_correct += (preds == yb).sum().item()
-                train_total_pixels += yb.numel()
-
-                dice, iou = dice_score(logits, yb)
-                total_dice += dice.item() * xb.size(0)
-                total_iou += iou.item() * xb.size(0)
-
-                total_samples += xb.size(0)
-
-                pbar.set_postfix(loss=loss.item())
-
-            train_epoch_loss = train_loss / train_total_pixels
-            train_epoch_acc = train_correct / train_total_pixels
-            train_epoch_dice = total_dice / total_samples
-            train_epoch_iou = total_iou / total_samples
-            tqdm.write(f"""
-            Train Loss {train_epoch_loss:.4f} Train Acc {train_epoch_acc:.2f} 
-            Train Dice {train_epoch_dice:.4f} Train IoU {train_epoch_iou:.4f}""")
-
-        model.eval()
-        with tqdm(val_dl, desc="Validation") as pbar:
-            with torch.no_grad():
-                val_loss = 0.0
-                val_correct = 0.0
-                val_total = 0
-                total_dice = 0.0
-                total_iou = 0.0
-                total_samples = 0
-                for xb, yb in pbar:
-                    xb, yb = xb.to(config.device), yb.to(config.device)
-                    logits = model(xb)
-                    loss = criterion(logits, yb)
-
-                    _, preds = torch.max(logits, 1)
-                    val_correct += (preds == yb).sum().item()
-                    val_loss += loss.item() * yb.numel()
-                    val_total += yb.numel()
-
-                    dice, iou = dice_score(logits, yb)
-                    total_dice += dice.item() * xb.size(0)
-                    total_iou += iou.item() * xb.size(0)
-
-                    total_samples += xb.size(0)
-
-                    pbar.set_postfix(loss=loss.item())
-
-                val_epoch_loss = val_loss / val_total
-                val_epoch_acc = val_correct / val_total
-                val_epoch_dice = total_dice / total_samples
-                val_epoch_iou = total_iou / total_samples
-                tqdm.write(f"""
-                    Val Loss {val_epoch_loss:.4f} Val Acc {val_epoch_acc:.2f} 
-                    Val Dice {val_epoch_dice:.4f} Val IoU {val_epoch_iou:.4f}""")
-                pbar.set_postfix(loss=loss.item())
-
-                if config.device == 'cuda' and config.save_model and val_epoch_dice > best_val_dice:
-                    tqdm.write("Writing best model...")
-                    best_val_dice = val_epoch_dice
-                    torch.save(model.state_dict(), "best_model.pth")
-                    artifact = wandb.Artifact(name=f"{config.name}_best_model", type="model")
-                    artifact.add_file("best_model.pth")
-                    wandb.log_artifact(artifact)
-                    tqdm.write("Model written.")
-        wandb.log({
-            "epoch": epoch,
-            "train/loss": train_epoch_loss,
-            "train/acc": train_epoch_acc,
-            "train/dice": train_epoch_dice,
-            "train/iou": train_epoch_iou,
-            "val/loss": val_epoch_loss,
-            "val/acc": val_epoch_acc,
-            "val/dice": val_epoch_dice,
-            "val/iou": val_epoch_iou,
-            "lr": config.lr,
-        })
-    wandb.finish()
-    if config.get("visualize_predictions"):
-        visualize_predictions(model, val_dl, config.device, num_batches=1)
     
 
-def train_and_validate_model_enhanced(train_dl, val_dl, config):
+def train_and_validate_model(train_dl, val_dl, config):
     config_dict = OmegaConf.to_container(config, resolve=True)
     wandb.init(
         project=config.project,
@@ -717,10 +493,7 @@ def main(config):
         # visualize_dataset_grid(dataset, num_samples=8)
         train_ds, val_ds, _ = configure_dataset(config)
         train_dl, val_dl = get_train_val_dl(train_ds, val_ds, config)
-        if config.train_enhanced:
-            train_and_validate_model_enhanced(train_dl, val_dl, config)
-        else:
-            train_and_validate_model_standard(train_dl, val_dl, config)
+        train_and_validate_model(train_dl, val_dl, config)
 
 
 def load_config(env="local"):

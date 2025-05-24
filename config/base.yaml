@@ -13,7 +13,7 @@ ignore_index: 2
 p_dropout: 0.1
 
 # Optimizer
-# lr: 1e-4
+lr: 1e-4
 enc_lr: 1e-4
 dec_lr: 1e-3
 weight_decay: 1e-5
@@ -24,3 +24,4 @@ tmult: 2
 eta_min: 1e-6
 
 add_augmentation: True
+train_enhanced: False
