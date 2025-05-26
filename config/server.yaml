@@ -1,4 +1,4 @@
-name: resnetunet-add-augmentation-unenhanced
+name: resnetunet-add-augmentation-enhanced-yt
 
 batch_size: 32
 image_size: 224
