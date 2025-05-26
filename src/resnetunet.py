@@ -503,17 +503,43 @@ def train_and_validate_model_enhanced(train_dl, val_dl, config):
 
     model = ResNetUNet(n_classes=3).to(config.device)
 
-    # Added
+    # ADDED
     #### Freeze entire encoder (layer0–layer4), leave decoder & head trainable ####
+    # This “head-first, then body” schedule lets the decoder learn to map
+    # pretrained features to masks before it accidentally “unlearns” those features.
+
+    # WHY?
+    # 1. In general, if we update the encoder with gradients from
+    # the first few epochs, there's # a high chance we ruin
+    # the encoders intelligent distribution with noisy or unwanted gradients.
+
+    # 2. Once the model head is doing something reasonable, we unfreeze
+    # just the deepest ResNet blocks (layer3/layer4). These layers
+    # are already more specialized to high-level, semantic concepts
+    # and easier to adapt to segmentation without destroying lower-level
+    # edges/textures in layer0–2. We're nudging the networktoward
+    # your new domain, not slamming it with a full end-to-end update.
+
+    # 3. Now that head and late-stage features are dialed in, you can safely
+    # adjust earlier layers (layer0–2) to better suit your data’s
+    # color distributions or fine details—again, at a small learning rate so
+    # you don’t wash out the general visual features (edges, corners,
+    # textures) that the backbone learned from ImageNet.
+
     for name, param in model.named_parameters():
         if name.startswith("layer") or name.startswith("pool0") or name.startswith("layer0"):
             param.requires_grad = False
 
-    # label indexes (pets, background, boundary)
-    weights = torch.tensor([1.3, 1.0, 0.0], device=config.device)
+    # ADDED
+    # NOTE: The original UNet paper weighted the Cross Entropy
+    # loss by class weights that are inversely proportional to
+    # their representation (count) in the images
+    weights = torch.tensor([1.3, 1.0, 0.0], device=config.device) # Indexes (pets, background, boundary)
     criterion = nn.CrossEntropyLoss(weight=weights, ignore_index=2)
 
-    # Added: Differential learning rates
+    # ADDED: Differential learning rates
+    # WHY? Large pretrained weights only move gently
+    # Decoder can learn faster.
     # 1) param groups
     enc = [*model.layer0.parameters(),
         *model.layer1.parameters(),
@@ -525,12 +551,13 @@ def train_and_validate_model_enhanced(train_dl, val_dl, config):
         p for name, p in model.named_parameters()
         if not name.startswith(("layer0","pool0","layer1","layer2","layer3","layer4"))
     ]
+    # ADDED: Regularization "weight-decay"
     optimizer = torch.optim.AdamW([
         {"params": enc, "lr": config.enc_lr}, # Encoder LRs
         {"params": dec, "lr": config.dec_lr}, # Decoder LRs
     ], weight_decay=1e-5)
 
-    # Added
+    # ADDED
     # Cosine scheduler that runs in periods
     # T_0 = number of epochs in the first cycle
     # T_mult = factor by which the cycle length grows each restart
@@ -545,18 +572,30 @@ def train_and_validate_model_enhanced(train_dl, val_dl, config):
     for epoch in range(1, config.n_epochs+1):
         tqdm.write(f"Epoch {epoch}/{config.n_epochs+1}")
 
-        # Added
-        # Warm-up first 2 epochs
+        # ADDED: Warm-up first 2 epochs
+        # Even though our encoder is frozen, we sti
+        # Why?
+        # 1. A brief learning-rate warm-up lets BatchNorm’s running-mean and running-variance
+        # stabilize on realistic feature distributions. If we hit the model
+        # (even just the unfrozen decoder) with a high LR immediately, those noisy early
+        # gradients can push BN’s statistics—and the newly initialized decoder
+        # weights—into bad regions, causing unstable training.
+        # WHY?
+        # 2. Modern optimizers like AdamW build up per-parameter moments (the
+        # running average of the past gradients). If uwe hit them
+        # immediately with your full dec_lr, those buffers can be skewed
+        # by the very first random gradient directions
+        # and take longer to settle. 
         if epoch <= 2:
             for pg in optimizer.param_groups:
                 pg["lr"] = pg["lr"] * (epoch / 2)
                 print(f"Warm starting with lr {pg['lr']}")
 
-        # Added
+        # ADDED
         # ——— Unfreeze logic ———
         if epoch == config.unfreeze_stage0:
             tqdm.write("Unfreezing layers 3 & 4")
-            # unfreeze last two stages
+            # unfreeze last two stages of the encoder
             for p in model.layer3.parameters(): p.requires_grad = True
             for p in model.layer4.parameters(): p.requires_grad = True
 

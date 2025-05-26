@@ -62,6 +62,10 @@ class DoubleConv(nn.Module):
 # layer3               [1, 256,  14,  14]   ...
 # layer4               [1, 512,   7,   7]   ...
 class UpBlock(nn.Module):
+    def __init__(self, in_channels, out_channels, p_dropout=None):
+        pass
+
+    def forward()
 
 
 class ResNetUNet(nn.Module):

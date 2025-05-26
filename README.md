@@ -7,7 +7,7 @@ apt update && apt install vim -y && apt install screen -y
 
 # Copy contents to file install_gh.sh
 # Contents of install_gh.sh
-``
+```
 (type -p wget >/dev/null || (apt update && apt-get install wget -y)) \
 	&& mkdir -p -m 755 /etc/apt/keyrings \
         && out=$(mktemp) && wget -nv -O$out https://cli.github.com/packages/githubcli-archive-keyring.gpg \
@@ -17,6 +17,7 @@ apt update && apt install vim -y && apt install screen -y
 	&& apt update \
 	&& apt install gh -y
 ```
+
 # Install gh client with script install_gh.sh
 touch install_gh.sh
 chmod +x install_gh.sh
