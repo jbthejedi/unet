@@ -504,7 +504,7 @@ def train_and_validate_model_enhanced(train_dl, val_dl, config):
     model = ResNetUNet(n_classes=3).to(config.device)
 
     # ADDED
-    #### Freeze entire encoder (layer0–layer4), leave decoder & head trainable ####
+    #### FREEZE ENTIRE ENCODER (LAYER0–LAYER4), LEAVE DECODER & HEAD TRAINABLE ####
     # This “head-first, then body” schedule lets the decoder learn to map
     # pretrained features to masks before it accidentally “unlearns” those features.
 
@@ -517,13 +517,13 @@ def train_and_validate_model_enhanced(train_dl, val_dl, config):
     # just the deepest ResNet blocks (layer3/layer4). These layers
     # are already more specialized to high-level, semantic concepts
     # and easier to adapt to segmentation without destroying lower-level
-    # edges/textures in layer0–2. We're nudging the networktoward
-    # your new domain, not slamming it with a full end-to-end update.
+    # edges/textures in layer0–2. We're nudging the network toward
+    # the new domain, not slamming it with a full end-to-end update.
 
-    # 3. Now that head and late-stage features are dialed in, you can safely
-    # adjust earlier layers (layer0–2) to better suit your data’s
+    # 3. Now that head and late-stage features are dialed in, we can safely
+    # adjust earlier layers (layer0–2) to better suit our data’s
     # color distributions or fine details—again, at a small learning rate so
-    # you don’t wash out the general visual features (edges, corners,
+    # we don’t wash out the general visual features (edges, corners,
     # textures) that the backbone learned from ImageNet.
 
     for name, param in model.named_parameters():
@@ -546,19 +546,18 @@ def train_and_validate_model_enhanced(train_dl, val_dl, config):
         *model.layer2.parameters(),
         *model.layer3.parameters(),
         *model.layer4.parameters()]
-    # dec = [p for p in model.parameters() if p not in enc]
     dec = [
         p for name, p in model.named_parameters()
         if not name.startswith(("layer0","pool0","layer1","layer2","layer3","layer4"))
     ]
-    # ADDED: Regularization "weight-decay"
+    # ADDED: REGULARIZATION "WEIGHT-DECAY"
     optimizer = torch.optim.AdamW([
         {"params": enc, "lr": config.enc_lr}, # Encoder LRs
         {"params": dec, "lr": config.dec_lr}, # Decoder LRs
     ], weight_decay=1e-5)
 
     # ADDED
-    # Cosine scheduler that runs in periods
+    # COSINE SCHEDULER THAT RUNS IN PERIODS
     # T_0 = number of epochs in the first cycle
     # T_mult = factor by which the cycle length grows each restart
     scheduler = CosineAnnealingWarmRestarts(
@@ -572,7 +571,7 @@ def train_and_validate_model_enhanced(train_dl, val_dl, config):
     for epoch in range(1, config.n_epochs+1):
         tqdm.write(f"Epoch {epoch}/{config.n_epochs+1}")
 
-        # ADDED: Warm-up first 2 epochs
+        # ADDED: WARM-UP FIRST 2 EPOCHS
         # Even though our encoder is frozen, we sti
         # Why?
         # 1. A brief learning-rate warm-up lets BatchNorm’s running-mean and running-variance
