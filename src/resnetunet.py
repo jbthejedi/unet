@@ -8,7 +8,6 @@ import torchvision.models as models
 import random
 import torch
 
-import torchvision.models as models
 import numpy as np
 import torch.nn.functional as F
 import torchvision.transforms as T
@@ -92,8 +91,8 @@ class UpBlock(nn.Module):
             pad_bottom = diffY - diffY//2
             x = F.pad(x, [pad_left, pad_right, pad_top, pad_bottom])
 
-        x = torch.cat([skip, x], dim=1)
-        return self.conv(x)
+        x = torch.cat([skip, x], dim=1) # Fuse
+        return self.conv(x) # Refine
 
 class ResNetUNet(nn.Module):
     def __init__(self, n_classes):
@@ -249,8 +248,12 @@ def visualize_predictions(model, dataloader, device, num_batches=5):
 IMAGENET_MEAN = (0.485, 0.456, 0.406)
 IMAGENET_STD  = (0.229, 0.224, 0.225)
 
-# 1) build your Albumentations pipeline
+# 1) ADDED: build your Albumentations pipeline
 def get_train_transforms(image_size):
+    # It's especially important to normalize by the mean and var
+    # associated with the data distribution of our pretrained weights
+    # so that your network doesn't have to waste any epochs
+    # learning the distribtuion that works with the imported weights
     normalize = A.Normalize(mean=IMAGENET_MEAN, std =IMAGENET_STD)
     return A.Compose([
             A.Resize(image_size, image_size),
@@ -283,7 +286,27 @@ def get_test_transforms(image_size):
     ])
 
 
-# Added
+# ADDED: Custom PyTorch Dataset
+# WHY?
+# Albumentations requires NumPy arrays, not PIL images.
+
+# The default OxfordIIITPet dataset returns PIL images, so we need to:
+# - Convert them to NumPy arrays.
+# - Apply Albumentations.
+# - Return PyTorch-compatible tensors.
+# That’s why we wrap the base dataset inside our custom class.
+# What This Dataset Class Does?
+# Wraps the original dataset (OxfordIIITPet).
+
+# Converts inputs:
+# - PIL -> NumPy before Albumentations.
+# - NumPy -> Tensor using ToTensorV2() inside Albumentations.
+
+# Handles the segmentation mask label mapping:
+# - In this dataset, class labels start at 1 (1 = pet, 2 = background, 3 = border).
+# - We map label 1 → 0 (pet), 2 → 1 (background).
+# - Label 0 (border) is treated as an ignore index.
+# - After adjustment: mask_t[mask_t == 0] = ignore_index, then mask_t = mask_t - 1.
 class PetSegDataset(Dataset):
     def __init__(self, base, transform, ignore_index):
         super().__init__()
@@ -562,8 +585,8 @@ def train_and_validate_model_enhanced(train_dl, val_dl, config):
     # T_mult = factor by which the cycle length grows each restart
     scheduler = CosineAnnealingWarmRestarts(
         optimizer,
-        T_0=config.t0,
-        T_mult=config.tmult,
+        T_0=config.t0, # 10
+        T_mult=config.tmult, # 2
         eta_min=config.eta_min,
     )
 
@@ -585,7 +608,7 @@ def train_and_validate_model_enhanced(train_dl, val_dl, config):
         # immediately with your full dec_lr, those buffers can be skewed
         # by the very first random gradient directions
         # and take longer to settle. 
-        if epoch <= 2:
+        if epoch <= 2: # TODO make config parameter
             for pg in optimizer.param_groups:
                 pg["lr"] = pg["lr"] * (epoch / 2)
                 print(f"Warm starting with lr {pg['lr']}")

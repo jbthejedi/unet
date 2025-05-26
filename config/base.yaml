@@ -24,4 +24,4 @@ tmult: 2
 eta_min: 1e-6
 
 add_augmentation: True
-train_enhanced: False
+train_enhanced: True
